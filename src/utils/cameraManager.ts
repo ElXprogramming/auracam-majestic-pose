@@ -60,27 +60,41 @@ export function buildMediaConstraints(config: CameraConfig): MediaStreamConstrai
   const videoConstraints: MediaTrackConstraints = {};
 
   if (deviceId) {
-    videoConstraints.deviceId = { exact: deviceId };
+    videoConstraints.deviceId = { ideal: deviceId };
   } else {
-    videoConstraints.facingMode = facingMode;
+    // On iOS Safari, ideal facingMode is much more forgiving than strict facingMode
+    videoConstraints.facingMode = { ideal: facingMode };
   }
 
-  // Configure resolution based on aspect ratio mode
+  // Detect if device/browser is in landscape (e.g. iPad in landscape or desktop)
+  const isLandscape = typeof window !== 'undefined' && window.innerWidth > window.innerHeight;
+
+  // Configure resolution based on aspect ratio mode without 'min' constraints!
+  // 'min' constraints cause OverconstrainedError on iOS Safari when camera sensor orientation differs.
   if (aspectRatioMode === 'wide-sensor') {
-    // 3:4 or 4:3 uncropped full optical sensor - gives maximum wide field of view!
-    // Never forces a 9:16 crop in hardware driver
-    videoConstraints.width = { ideal: 1440, min: 480 };
-    videoConstraints.height = { ideal: 1920, min: 640 };
-    videoConstraints.aspectRatio = { ideal: 3 / 4 };
+    if (isLandscape) {
+      videoConstraints.width = { ideal: 1920 };
+      videoConstraints.height = { ideal: 1440 };
+      videoConstraints.aspectRatio = { ideal: 4 / 3 };
+    } else {
+      videoConstraints.width = { ideal: 1440 };
+      videoConstraints.height = { ideal: 1920 };
+      videoConstraints.aspectRatio = { ideal: 3 / 4 };
+    }
   } else if (aspectRatioMode === 'portrait-9-16') {
-    // Standard vertical 9:16
-    videoConstraints.width = { ideal: 1080, min: 480 };
-    videoConstraints.height = { ideal: 1920, min: 640 };
-    videoConstraints.aspectRatio = { ideal: 9 / 16 };
+    if (isLandscape) {
+      videoConstraints.width = { ideal: 1920 };
+      videoConstraints.height = { ideal: 1080 };
+      videoConstraints.aspectRatio = { ideal: 16 / 9 };
+    } else {
+      videoConstraints.width = { ideal: 1080 };
+      videoConstraints.height = { ideal: 1920 };
+      videoConstraints.aspectRatio = { ideal: 9 / 16 };
+    }
   } else {
     // Landscape 16:9
-    videoConstraints.width = { ideal: 1920, min: 640 };
-    videoConstraints.height = { ideal: 1080, min: 480 };
+    videoConstraints.width = { ideal: 1920 };
+    videoConstraints.height = { ideal: 1080 };
     videoConstraints.aspectRatio = { ideal: 16 / 9 };
   }
 

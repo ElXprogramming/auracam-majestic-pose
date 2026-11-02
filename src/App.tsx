@@ -35,14 +35,15 @@ import {
   CameraDeviceInfo, 
   AspectRatioMode 
 } from './utils/cameraManager';
+import { isIOS } from './utils/deviceUtils';
 import { PoseBadge } from './components/PoseBadge';
 import { ControlsDrawer } from './components/ControlsDrawer';
 import { PoseGuideModal } from './components/PoseGuideModal';
 import { RecordModal } from './components/RecordModal';
 
 export const App: React.FC = () => {
-  // Determine if mobile portrait
-  const isInitialMobile = typeof window !== 'undefined' ? window.innerWidth < 768 : true;
+  // Determine if mobile portrait or iPad
+  const isInitialMobile = typeof window !== 'undefined' ? window.innerWidth < 1024 || isIOS() : true;
 
   // Camera State
   const [isCameraActive, setIsCameraActive] = useState(false);
@@ -194,10 +195,13 @@ export const App: React.FC = () => {
       await audioManagerRef.current.init();
     }
 
-    // Stop existing stream if any
+    // Stop existing stream if any and detach
     if (videoRef.current && videoRef.current.srcObject) {
       const existing = videoRef.current.srcObject as MediaStream;
       existing.getTracks().forEach((t) => t.stop());
+      videoRef.current.srcObject = null;
+      // Brief pause for iOS hardware camera session release
+      await new Promise((r) => setTimeout(r, 60));
     }
 
     const aspect = nextAspectMode || aspectRatioMode;
@@ -215,12 +219,27 @@ export const App: React.FC = () => {
       }
 
       if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
+        const video = videoRef.current;
+        video.muted = true;
+        video.playsInline = true;
+        video.setAttribute('playsinline', 'true');
+        video.setAttribute('webkit-playsinline', 'true');
+        video.srcObject = stream;
+
+        // On iOS Safari, wait for metadata before play() to ensure videoWidth and videoHeight are populated
+        await new Promise<void>((resolve) => {
+          if (video.readyState >= 1) {
+            resolve();
+          } else {
+            video.onloadedmetadata = () => resolve();
+          }
+        });
+
+        await video.play();
         setIsCameraActive(true);
 
-        const vW = videoRef.current.videoWidth || 1280;
-        const vH = videoRef.current.videoHeight || 720;
+        const vW = video.videoWidth || 1280;
+        const vH = video.videoHeight || 720;
         setCameraResolution({ width: vW, height: vH });
       }
 
@@ -230,16 +249,27 @@ export const App: React.FC = () => {
       console.warn('Initial camera constraint failed, retrying fallback constraints:', err);
       try {
         const fallbackStream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: nextFacing },
+          video: { facingMode: { ideal: nextFacing } },
           audio: false,
         });
         if (videoRef.current) {
-          videoRef.current.srcObject = fallbackStream;
-          await videoRef.current.play();
+          const video = videoRef.current;
+          video.muted = true;
+          video.playsInline = true;
+          video.setAttribute('playsinline', 'true');
+          video.setAttribute('webkit-playsinline', 'true');
+          video.srcObject = fallbackStream;
+
+          await new Promise<void>((resolve) => {
+            if (video.readyState >= 1) resolve();
+            else video.onloadedmetadata = () => resolve();
+          });
+
+          await video.play();
           setIsCameraActive(true);
           setCameraResolution({
-            width: videoRef.current.videoWidth || 1280,
-            height: videoRef.current.videoHeight || 720,
+            width: video.videoWidth || 1280,
+            height: video.videoHeight || 720,
           });
         }
       } catch (finalErr: unknown) {
@@ -249,6 +279,34 @@ export const App: React.FC = () => {
       }
     }
   };
+
+  // iOS Safari Lifecycle: Auto-resume camera video & audio if paused when tab is foregrounded
+  useEffect(() => {
+    const handleResume = async () => {
+      if (document.visibilityState === 'visible' && isCameraActive && videoRef.current) {
+        if (videoRef.current.paused) {
+          try {
+            await videoRef.current.play();
+          } catch (e) {
+            console.warn('Auto-resuming camera stream after tab backgrounded:', e);
+          }
+        }
+        if (audioManagerRef.current) {
+          audioManagerRef.current.resumeIfSuspended();
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleResume);
+    window.addEventListener('pageshow', handleResume);
+    window.addEventListener('focus', handleResume);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleResume);
+      document.removeEventListener('pageshow', handleResume);
+      window.removeEventListener('focus', handleResume);
+    };
+  }, [isCameraActive]);
 
   const startCamera = () => {
     startCameraWithConfig(facingMode, selectedDeviceId, aspectRatioMode);
@@ -284,106 +342,110 @@ export const App: React.FC = () => {
 
   // Main Render & Detection Loop
   const renderFrame = useCallback(() => {
-    const video = videoRef.current;
-    const webglCanvas = webglCanvasRef.current;
-    const skeletonCanvas = skeletonCanvasRef.current;
+    try {
+      const video = videoRef.current;
+      const webglCanvas = webglCanvasRef.current;
+      const skeletonCanvas = skeletonCanvasRef.current;
 
-    if (video && video.readyState >= 2 && webglCanvas) {
-      const now = performance.now();
-      const deltaSec = Math.min((now - lastTimeRef.current) / 1000, 0.1);
-      lastTimeRef.current = now;
+      if (video && video.readyState >= 2 && webglCanvas && video.videoWidth > 0 && video.videoHeight > 0) {
+        const now = performance.now();
+        const deltaSec = Math.min((now - lastTimeRef.current) / 1000, 0.1);
+        lastTimeRef.current = now;
 
-      // Update canvas dimensions to match video stream aspect ratio
-      const videoWidth = video.videoWidth || 1280;
-      const videoHeight = video.videoHeight || 720;
+        // Update canvas dimensions to match video stream aspect ratio
+        const videoWidth = video.videoWidth;
+        const videoHeight = video.videoHeight;
 
-      if (webglCanvas.width !== videoWidth || webglCanvas.height !== videoHeight) {
-        webglCanvas.width = videoWidth;
-        webglCanvas.height = videoHeight;
-        setCameraResolution({ width: videoWidth, height: videoHeight });
-      }
+        if (webglCanvas.width !== videoWidth || webglCanvas.height !== videoHeight) {
+          webglCanvas.width = videoWidth;
+          webglCanvas.height = videoHeight;
+          setCameraResolution({ width: videoWidth, height: videoHeight });
+        }
 
-      if (skeletonCanvas && (skeletonCanvas.width !== videoWidth || skeletonCanvas.height !== videoHeight)) {
-        skeletonCanvas.width = videoWidth;
-        skeletonCanvas.height = videoHeight;
-      }
+        if (skeletonCanvas && (skeletonCanvas.width !== videoWidth || skeletonCanvas.height !== videoHeight)) {
+          skeletonCanvas.width = videoWidth;
+          skeletonCanvas.height = videoHeight;
+        }
 
-      // Initialize WebGL pipeline if needed
-      if (!webglPipelineRef.current) {
-        webglPipelineRef.current = new WebGLFilterPipeline(webglCanvas);
-        webglPipelineRef.current.bloomStrength = bloomIntensity;
-        webglPipelineRef.current.isMirrored = isMirrored;
-        webglPipelineRef.current.cameraZoom = cameraZoom;
-      } else {
-        webglPipelineRef.current.cameraZoom = cameraZoom;
-      }
+        // Initialize WebGL pipeline if needed
+        if (!webglPipelineRef.current) {
+          webglPipelineRef.current = new WebGLFilterPipeline(webglCanvas);
+          webglPipelineRef.current.bloomStrength = bloomIntensity;
+          webglPipelineRef.current.isMirrored = isMirrored;
+          webglPipelineRef.current.cameraZoom = cameraZoom;
+        } else {
+          webglPipelineRef.current.cameraZoom = cameraZoom;
+        }
 
-      // 1. Pose Detection via MediaPipe
-      if (poseDetectorRef.current && poseDetectorRef.current.isReady()) {
-        const landmarks = poseDetectorRef.current.detectPose(video, now);
-        if (landmarks) {
-          currentLandmarksRef.current = landmarks;
-          const { pose: classifiedPose } = classifyPoseGeometry(landmarks, poseSensitivity);
-          setRawPose(classifiedPose);
+        // 1. Pose Detection via MediaPipe (skip if paused to save CPU)
+        if (poseDetectorRef.current && poseDetectorRef.current.isReady() && !video.paused) {
+          const landmarks = poseDetectorRef.current.detectPose(video, now);
+          if (landmarks) {
+            currentLandmarksRef.current = landmarks;
+            const { pose: classifiedPose } = classifyPoseGeometry(landmarks, poseSensitivity);
+            setRawPose(classifiedPose);
 
-          const { detectedPose: debouncedPose } = debouncerRef.current.update(classifiedPose, now);
+            const { detectedPose: debouncedPose } = debouncerRef.current.update(classifiedPose, now);
 
-          if (debouncedPose !== lastPoseRef.current) {
-            lastPoseRef.current = debouncedPose;
-            setDetectedPose(debouncedPose);
+            if (debouncedPose !== lastPoseRef.current) {
+              lastPoseRef.current = debouncedPose;
+              setDetectedPose(debouncedPose);
 
-            if (debouncedPose) {
-              triggerMajesticSparkles();
-              if (audioManagerRef.current) {
-                audioManagerRef.current.triggerPoseAudio();
+              if (debouncedPose) {
+                triggerMajesticSparkles();
+                if (audioManagerRef.current) {
+                  audioManagerRef.current.triggerPoseAudio();
+                }
+              } else if (!forceFilter) {
+                if (audioManagerRef.current) {
+                  audioManagerRef.current.releasePoseAudio();
+                }
               }
-            } else if (!forceFilter) {
-              if (audioManagerRef.current) {
+            }
+          } else {
+            // No landmarks in this frame
+            const { detectedPose: debouncedPose } = debouncerRef.current.update(null, now);
+            if (debouncedPose !== lastPoseRef.current) {
+              lastPoseRef.current = debouncedPose;
+              setDetectedPose(debouncedPose);
+              if (!debouncedPose && !forceFilter && audioManagerRef.current) {
                 audioManagerRef.current.releasePoseAudio();
               }
             }
           }
-        } else {
-          // No landmarks in this frame
-          const { detectedPose: debouncedPose } = debouncerRef.current.update(null, now);
-          if (debouncedPose !== lastPoseRef.current) {
-            lastPoseRef.current = debouncedPose;
-            setDetectedPose(debouncedPose);
-            if (!debouncedPose && !forceFilter && audioManagerRef.current) {
-              audioManagerRef.current.releasePoseAudio();
-            }
+        }
+
+        // Filter active condition
+        const isMajesticActive = Boolean(detectedPose || forceFilter);
+
+        // 2. Render WebGL Majestic Shader
+        webglPipelineRef.current.render(video, now / 1000, deltaSec, isMajesticActive);
+
+        // 3. Render Neon Skeleton Wireframe (if enabled)
+        if (skeletonCanvas && showSkeleton && currentLandmarksRef.current) {
+          const ctx = skeletonCanvas.getContext('2d');
+          if (ctx) {
+            renderNeonSkeleton(
+              ctx,
+              currentLandmarksRef.current,
+              skeletonCanvas.width,
+              skeletonCanvas.height,
+              {
+                isMirrored,
+                isPoseActive: isMajesticActive,
+              }
+            );
           }
+        } else if (skeletonCanvas) {
+          const ctx = skeletonCanvas.getContext('2d');
+          if (ctx) ctx.clearRect(0, 0, skeletonCanvas.width, skeletonCanvas.height);
         }
       }
-
-      // Filter active condition
-      const isMajesticActive = Boolean(detectedPose || forceFilter);
-
-      // 2. Render WebGL Majestic Shader
-      webglPipelineRef.current.render(video, now / 1000, deltaSec, isMajesticActive);
-
-      // 3. Render Neon Skeleton Wireframe (if enabled)
-      if (skeletonCanvas && showSkeleton && currentLandmarksRef.current) {
-        const ctx = skeletonCanvas.getContext('2d');
-        if (ctx) {
-          renderNeonSkeleton(
-            ctx,
-            currentLandmarksRef.current,
-            skeletonCanvas.width,
-            skeletonCanvas.height,
-            {
-              isMirrored,
-              isPoseActive: isMajesticActive,
-            }
-          );
-        }
-      } else if (skeletonCanvas) {
-        const ctx = skeletonCanvas.getContext('2d');
-        if (ctx) ctx.clearRect(0, 0, skeletonCanvas.width, skeletonCanvas.height);
-      }
+    } catch (frameErr) {
+      console.warn('Frame render error caught:', frameErr);
+    } finally {
+      animFrameIdRef.current = requestAnimationFrame(renderFrame);
     }
-
-    animFrameIdRef.current = requestAnimationFrame(renderFrame);
   }, [detectedPose, forceFilter, isMirrored, poseSensitivity, showSkeleton, bloomIntensity, cameraZoom, triggerMajesticSparkles]);
 
   useEffect(() => {
@@ -417,7 +479,14 @@ export const App: React.FC = () => {
     if (!canvas) return;
 
     try {
-      const videoStream = canvas.captureStream(30);
+      const captureStreamFn = (canvas as unknown as { captureStream?: (fps: number) => MediaStream; webkitCaptureStream?: (fps: number) => MediaStream }).captureStream ||
+        (canvas as unknown as { captureStream?: (fps: number) => MediaStream; webkitCaptureStream?: (fps: number) => MediaStream }).webkitCaptureStream;
+
+      if (!captureStreamFn) {
+        throw new Error('Canvas recording is not supported on this browser.');
+      }
+
+      const videoStream = captureStreamFn.call(canvas, 30);
       const audioDest = audioManagerRef.current?.getAudioStreamDestination();
       const combinedTracks: MediaStreamTrack[] = [...videoStream.getVideoTracks()];
 
@@ -425,23 +494,48 @@ export const App: React.FC = () => {
         combinedTracks.push(audioDest.stream.getAudioTracks()[0]);
       }
 
-      const stream = new MediaStream(combinedTracks);
+      const streamWithAudio = new MediaStream(combinedTracks);
+      const streamVideoOnly = new MediaStream([...videoStream.getVideoTracks()]);
 
-      let mimeType = 'video/webm;codecs=vp9,opus';
-      if (!MediaRecorder.isTypeSupported(mimeType)) {
-        mimeType = 'video/webm;codecs=vp8,opus';
-        if (!MediaRecorder.isTypeSupported(mimeType)) {
-          mimeType = 'video/webm';
-          if (!MediaRecorder.isTypeSupported(mimeType)) {
-            mimeType = 'video/mp4';
-          }
+      const isApple = isIOS();
+      // On iOS Safari, prioritize MP4 containers; on Android/Desktop, WebM
+      const candidateMimes = isApple
+        ? [
+            'video/mp4;codecs=avc1,mp4a.40.2',
+            'video/mp4;codecs=avc1',
+            'video/mp4',
+            'video/webm;codecs=vp9,opus',
+            'video/webm',
+          ]
+        : [
+            'video/webm;codecs=vp9,opus',
+            'video/webm;codecs=vp8,opus',
+            'video/webm',
+            'video/mp4;codecs=avc1',
+            'video/mp4',
+          ];
+
+      let chosenMime = '';
+      for (const m of candidateMimes) {
+        if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)) {
+          chosenMime = m;
+          break;
         }
       }
 
-      const recorder = new MediaRecorder(stream, {
-        mimeType: MediaRecorder.isTypeSupported(mimeType) ? mimeType : undefined,
-        videoBitsPerSecond: 6000000,
-      });
+      const recorderOptions: MediaRecorderOptions = {};
+      if (chosenMime) {
+        recorderOptions.mimeType = chosenMime;
+      }
+      recorderOptions.videoBitsPerSecond = isApple ? 4000000 : 6000000;
+
+      let recorder: MediaRecorder;
+      try {
+        recorder = new MediaRecorder(streamWithAudio, recorderOptions);
+      } catch (audioMixErr) {
+        console.warn('Combined audio/video MediaRecorder failed on iOS, falling back to video-only track:', audioMixErr);
+        recorder = new MediaRecorder(streamVideoOnly, recorderOptions);
+      }
 
       recordChunksRef.current = [];
       recorder.ondataavailable = (e) => {
@@ -451,7 +545,8 @@ export const App: React.FC = () => {
       };
 
       recorder.onstop = () => {
-        const blob = new Blob(recordChunksRef.current, { type: recorder.mimeType || 'video/webm' });
+        const finalType = recorder.mimeType || (isApple ? 'video/mp4' : 'video/webm');
+        const blob = new Blob(recordChunksRef.current, { type: finalType });
         const url = URL.createObjectURL(blob);
         setRecordedBlob(blob);
         setRecordedVideoUrl(url);
@@ -461,7 +556,14 @@ export const App: React.FC = () => {
         if (recordTimerRef.current) clearInterval(recordTimerRef.current);
       };
 
-      recorder.start(100);
+      // CRITICAL FOR IOS: In iOS Safari, timeslice (e.g. 100ms) with video/mp4 creates fragmented unplayable blobs.
+      // Calling start() without timeslice produces a single valid MP4 container with the moov atom.
+      if (isApple || chosenMime.includes('mp4')) {
+        recorder.start();
+      } else {
+        recorder.start(250);
+      }
+
       mediaRecorderRef.current = recorder;
       setIsRecording(true);
       setRecordSeconds(0);
@@ -482,12 +584,25 @@ export const App: React.FC = () => {
 
   return (
     <div className="fixed inset-0 w-full h-[100dvh] overflow-hidden bg-[#09090b] flex flex-col items-center justify-center">
-      {/* Hidden Source Video Element */}
+      {/* Off-screen Source Video Element (must NOT have display:none on iOS WebKit!) */}
       <video
         ref={videoRef}
         playsInline
+        {...{ 'webkit-playsinline': 'true' }}
         muted
-        className="hidden"
+        autoPlay
+        disablePictureInPicture
+        disableRemotePlayback
+        style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          width: '1px',
+          height: '1px',
+          opacity: 0.001,
+          pointerEvents: 'none',
+          zIndex: -9999,
+        }}
       />
 
       {/* Camera Live Viewport */}
@@ -509,8 +624,8 @@ export const App: React.FC = () => {
             }`}
           />
 
-          {/* Top HUD Header */}
-          <header className="absolute top-0 inset-x-0 p-4 sm:p-6 flex items-center justify-between z-30 pointer-events-none">
+          {/* Top HUD Header with Safe Area clearance for Notch / Dynamic Island */}
+          <header className="absolute top-0 inset-x-0 pt-[max(1rem,env(safe-area-inset-top))] px-4 sm:px-6 pb-2 flex items-center justify-between z-30 pointer-events-none">
             {/* Logo */}
             <div className="flex items-center gap-2 pointer-events-auto">
               <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-amber-500 to-yellow-300 p-0.5 shadow-lg shadow-amber-500/30">
@@ -569,8 +684,8 @@ export const App: React.FC = () => {
             </div>
           </header>
 
-          {/* Center Dynamic HUD Status Badge */}
-          <div className="absolute top-20 sm:top-24 z-30 pointer-events-auto">
+          {/* Center Dynamic HUD Status Badge with Safe Area clearance */}
+          <div className="absolute top-[max(5.5rem,calc(env(safe-area-inset-top)+3.5rem))] z-30 pointer-events-auto">
             <PoseBadge
               detectedPose={detectedPose}
               rawPose={rawPose}
@@ -583,7 +698,7 @@ export const App: React.FC = () => {
 
           {/* Recording Timer Badge */}
           {isRecording && (
-            <div className="absolute top-36 z-30 flex items-center gap-2 px-3 py-1.5 rounded-full bg-red-600/90 text-white font-mono text-xs font-bold tracking-wider animate-pulse shadow-lg shadow-red-600/50">
+            <div className="absolute top-[max(9rem,calc(env(safe-area-inset-top)+7rem))] z-30 flex items-center gap-2 px-3 py-1.5 rounded-full bg-red-600/90 text-white font-mono text-xs font-bold tracking-wider animate-pulse shadow-lg shadow-red-600/50">
               <span className="w-2 h-2 rounded-full bg-white" />
               REC {String(Math.floor(recordSeconds / 60)).padStart(2, '0')}:
               {String(recordSeconds % 60).padStart(2, '0')}
@@ -591,7 +706,7 @@ export const App: React.FC = () => {
           )}
 
           {/* Floating On-Screen Quick Lens & FOV Selector */}
-          <div className="absolute bottom-28 z-30 flex items-center gap-1.5 p-1 rounded-full glass-panel border border-white/15 shadow-xl shadow-black/50">
+          <div className="absolute bottom-[max(6.5rem,calc(env(safe-area-inset-bottom)+5.5rem))] z-30 flex items-center gap-1.5 p-1 rounded-full glass-panel border border-white/15 shadow-xl shadow-black/50">
             <button
               onClick={() => handleAspectRatioChange('wide-sensor')}
               className={`px-3 py-1 rounded-full text-xs font-bold tracking-wide transition-all ${
@@ -624,8 +739,8 @@ export const App: React.FC = () => {
             </button>
           </div>
 
-          {/* Bottom Floating Control Bar */}
-          <footer className="absolute bottom-0 inset-x-0 p-5 sm:p-8 flex items-center justify-around z-30 max-w-lg mx-auto">
+          {/* Bottom Floating Control Bar with Home Indicator clearance */}
+          <footer className="absolute bottom-0 inset-x-0 pb-[max(1.5rem,env(safe-area-inset-bottom))] px-5 sm:px-8 pt-2 flex items-center justify-around z-30 max-w-lg mx-auto">
             {/* Mirror Toggle */}
             <button
               onClick={() => setIsMirrored(!isMirrored)}
@@ -682,7 +797,7 @@ export const App: React.FC = () => {
         </div>
       ) : (
         /* Welcome / Start Screen */
-        <main className="relative z-10 max-w-lg w-full px-6 py-10 flex flex-col items-center text-center">
+        <main className="relative z-10 max-w-lg w-full px-6 py-10 flex flex-col items-center text-center safe-area-top safe-area-bottom">
           {/* Angelic Glowing Hero Icon */}
           <div className="relative mb-6">
             <div className="absolute -inset-4 rounded-full bg-gradient-to-r from-amber-500 via-yellow-300 to-amber-600 opacity-60 blur-xl animate-pulse" />

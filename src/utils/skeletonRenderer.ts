@@ -71,11 +71,14 @@ export function renderNeonSkeleton(
     };
   };
 
+  // Resolution-aware scale for crisp lines on high-density iPhone/iPad screens
+  const scale = Math.max(1, Math.min(width, height) / 500);
+
   // Draw Connections
-  ctx.lineWidth = isPoseActive ? 3.5 : 2.5;
+  ctx.lineWidth = (isPoseActive ? 4.0 : 2.8) * scale;
   ctx.strokeStyle = primaryColor;
   ctx.shadowColor = glowColor;
-  ctx.shadowBlur = isPoseActive ? 16 : 8;
+  ctx.shadowBlur = (isPoseActive ? 18 : 10) * scale;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
 
@@ -111,17 +114,17 @@ export function renderNeonSkeleton(
     // Outer halo
     if (isKeyJoint && isPoseActive) {
       ctx.beginPath();
-      ctx.arc(pt.x, pt.y, 10, 0, Math.PI * 2);
+      ctx.arc(pt.x, pt.y, 11 * scale, 0, Math.PI * 2);
       ctx.fillStyle = haloColor;
       ctx.fill();
     }
 
     // Inner node
     ctx.beginPath();
-    const radius = isKeyJoint ? (isPoseActive ? 5 : 4) : 3;
+    const radius = (isKeyJoint ? (isPoseActive ? 5.5 : 4.5) : 3.5) * scale;
     ctx.arc(pt.x, pt.y, radius, 0, Math.PI * 2);
     ctx.fillStyle = isKeyJoint ? '#ffffff' : primaryColor;
-    ctx.shadowBlur = 10;
+    ctx.shadowBlur = 10 * scale;
     ctx.fill();
   }
 

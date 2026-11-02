@@ -149,19 +149,36 @@ export class WebGLFilterPipeline {
   public bloomStrength: number = 1.0;
   public isMirrored: boolean = true;
   public cameraZoom: number = 1.0;
+  private isContextLost: boolean = false;
 
   constructor(private canvas: HTMLCanvasElement) {
+    this.setupContextLossHandlers();
     this.initGL();
   }
 
+  private setupContextLossHandlers() {
+    this.canvas.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault();
+      console.warn('⚡ [WebGLFilterPipeline] WebGL Context Lost! Awaiting restoration...');
+      this.isContextLost = true;
+    }, false);
+
+    this.canvas.addEventListener('webglcontextrestored', () => {
+      console.log('✨ [WebGLFilterPipeline] WebGL Context Restored! Reinitializing shaders...');
+      this.isContextLost = false;
+      this.initGL();
+    }, false);
+  }
+
   private initGL() {
-    const gl = this.canvas.getContext('webgl', {
+    const gl = (this.canvas.getContext('webgl', {
       alpha: false,
       antialias: false,
       depth: false,
       stencil: false,
       preserveDrawingBuffer: true, // Crucial for MediaRecorder stream capture
-    });
+      powerPreference: 'high-performance',
+    }) || this.canvas.getContext('experimental-webgl')) as WebGLRenderingContext | null;
 
     if (!gl) {
       console.error('WebGL not supported');
@@ -252,45 +269,51 @@ export class WebGLFilterPipeline {
     hasPose: boolean
   ) {
     const gl = this.gl;
-    if (!gl || !this.program || !this.texture || video.readyState < 2) return;
+    if (!gl || this.isContextLost || !this.program || !this.texture) return;
+    if (video.readyState < 2 || video.videoWidth === 0 || video.videoHeight === 0) return;
 
-    // 0.3s lerp transition
-    this.targetFilterIntensity = hasPose ? 1.0 : 0.0;
-    const lerpSpeed = 1.0 - Math.exp(-deltaSec / 0.12); // ~0.3s transition to 95%
-    this.currentFilterIntensity += (this.targetFilterIntensity - this.currentFilterIntensity) * lerpSpeed;
+    try {
+      // 0.3s lerp transition
+      this.targetFilterIntensity = hasPose ? 1.0 : 0.0;
+      const lerpSpeed = 1.0 - Math.exp(-deltaSec / 0.12); // ~0.3s transition to 95%
+      this.currentFilterIntensity += (this.targetFilterIntensity - this.currentFilterIntensity) * lerpSpeed;
 
-    if (Math.abs(this.currentFilterIntensity - this.targetFilterIntensity) < 0.002) {
-      this.currentFilterIntensity = this.targetFilterIntensity;
+      if (Math.abs(this.currentFilterIntensity - this.targetFilterIntensity) < 0.002) {
+        this.currentFilterIntensity = this.targetFilterIntensity;
+      }
+
+      gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+      gl.useProgram(this.program);
+
+      // Update texture with video frame safely
+      gl.bindTexture(gl.TEXTURE_2D, this.texture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+
+      // Set uniforms
+      if (this.uTimeLoc) gl.uniform1f(this.uTimeLoc, timeSec);
+      if (this.uFilterIntensityLoc) gl.uniform1f(this.uFilterIntensityLoc, this.currentFilterIntensity);
+      if (this.uBloomStrengthLoc) gl.uniform1f(this.uBloomStrengthLoc, this.bloomStrength);
+      if (this.uResolutionLoc) gl.uniform2f(this.uResolutionLoc, this.canvas.width, this.canvas.height);
+      if (this.uMirrorLoc) gl.uniform1i(this.uMirrorLoc, this.isMirrored ? 1 : 0);
+      if (this.uCameraZoomLoc) gl.uniform1f(this.uCameraZoomLoc, this.cameraZoom);
+
+      // Bind vertex buffers
+      const posLoc = gl.getAttribLocation(this.program, 'a_position');
+      gl.enableVertexAttribArray(posLoc);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.positionBuffer);
+      gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+
+      const texLoc = gl.getAttribLocation(this.program, 'a_texCoord');
+      gl.enableVertexAttribArray(texLoc);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.texCoordBuffer);
+      gl.vertexAttribPointer(texLoc, 2, gl.FLOAT, false, 0, 0);
+
+      // Draw full-screen quad
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+    } catch (err) {
+      // Catch transient iOS video frame read error without terminating the render loop
+      console.warn('WebGL render error on frame:', err);
     }
-
-    gl.viewport(0, 0, this.canvas.width, this.canvas.height);
-    gl.useProgram(this.program);
-
-    // Update texture with video frame
-    gl.bindTexture(gl.TEXTURE_2D, this.texture);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
-
-    // Set uniforms
-    if (this.uTimeLoc) gl.uniform1f(this.uTimeLoc, timeSec);
-    if (this.uFilterIntensityLoc) gl.uniform1f(this.uFilterIntensityLoc, this.currentFilterIntensity);
-    if (this.uBloomStrengthLoc) gl.uniform1f(this.uBloomStrengthLoc, this.bloomStrength);
-    if (this.uResolutionLoc) gl.uniform2f(this.uResolutionLoc, this.canvas.width, this.canvas.height);
-    if (this.uMirrorLoc) gl.uniform1i(this.uMirrorLoc, this.isMirrored ? 1 : 0);
-    if (this.uCameraZoomLoc) gl.uniform1f(this.uCameraZoomLoc, this.cameraZoom);
-
-    // Bind vertex buffers
-    const posLoc = gl.getAttribLocation(this.program, 'a_position');
-    gl.enableVertexAttribArray(posLoc);
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.positionBuffer);
-    gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
-
-    const texLoc = gl.getAttribLocation(this.program, 'a_texCoord');
-    gl.enableVertexAttribArray(texLoc);
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.texCoordBuffer);
-    gl.vertexAttribPointer(texLoc, 2, gl.FLOAT, false, 0, 0);
-
-    // Draw full-screen quad
-    gl.drawArrays(gl.TRIANGLES, 0, 6);
   }
 
   public destroy() {

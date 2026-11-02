@@ -25,7 +25,11 @@ export class MajesticAudioManager {
   public async init(): Promise<void> {
     if (this.ctx) {
       if (this.ctx.state === 'suspended') {
-        await this.ctx.resume();
+        try {
+          await this.ctx.resume();
+        } catch {
+          // ignore
+        }
       }
       return;
     }
@@ -34,8 +38,32 @@ export class MajesticAudioManager {
     this.ctx = new AudioContextClass();
 
     if (this.ctx.state === 'suspended') {
-      await this.ctx.resume();
+      try {
+        await this.ctx.resume();
+      } catch {
+        // ignore
+      }
     }
+
+    // iOS WebKit AudioContext Unlock: play a tiny 1-sample silent buffer during user gesture
+    try {
+      const unlockBuffer = this.ctx.createBuffer(1, 1, 22050);
+      const unlockSource = this.ctx.createBufferSource();
+      unlockSource.buffer = unlockBuffer;
+      unlockSource.connect(this.ctx.destination);
+      unlockSource.start(0);
+    } catch {
+      // ignore
+    }
+
+    // Attach touch listeners to keep AudioContext active if iOS Safari suspends it in background
+    const autoResume = () => {
+      if (this.ctx && this.ctx.state === 'suspended') {
+        this.ctx.resume().catch(() => {});
+      }
+    };
+    window.addEventListener('touchstart', autoResume, { passive: true, once: false });
+    window.addEventListener('click', autoResume, { passive: true, once: false });
 
     // Master filter: low-pass filter for muffled-to-brilliant angelic sweep
     this.filterNode = this.ctx.createBiquadFilter();
@@ -58,13 +86,22 @@ export class MajesticAudioManager {
     await this.loadAudioTrack();
   }
 
+  public resumeIfSuspended(): void {
+    if (this.ctx && this.ctx.state === 'suspended') {
+      this.ctx.resume().catch(() => {});
+    }
+  }
+
   private async loadAudioTrack(): Promise<void> {
     try {
       const response = await fetch('/audio/great_fairy_fountain.wav');
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const arrayBuffer = await response.arrayBuffer();
       if (this.ctx) {
-        this.audioBuffer = await this.ctx.decodeAudioData(arrayBuffer);
+        // Handle both Promise and callback versions of decodeAudioData for WebKit compatibility
+        this.audioBuffer = await new Promise<AudioBuffer>((resolve, reject) => {
+          this.ctx!.decodeAudioData(arrayBuffer, resolve, reject);
+        });
         this.isLoaded = true;
         console.log('Majestic track loaded successfully');
       }

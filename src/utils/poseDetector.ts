@@ -1,5 +1,6 @@
 import { FilesetResolver, PoseLandmarker, PoseLandmarkerResult } from '@mediapipe/tasks-vision';
 import { NormalizedLandmark } from './poseClassifier';
+import { isIOS } from './deviceUtils';
 
 export class PoseDetectorService {
   private poseLandmarker: PoseLandmarker | null = null;
@@ -18,11 +19,12 @@ export class PoseDetectorService {
       console.log('✨ [PoseDetector] Resolving vision tasks wasm...');
       this.statusMessage = 'Loading WebAssembly vision engine...';
 
-      // Resolve wasm using CDN or local path
+      // Prefer local pre-bundled wasm first (fastest, no CORS issues, works offline on mobile)
       let vision;
       const wasmUrls = [
-        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm',
         `${window.location.origin}/wasm`,
+        '/wasm',
+        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm',
         'https://unpkg.com/@mediapipe/tasks-vision@0.10.14/wasm'
       ];
 
@@ -49,31 +51,22 @@ export class PoseDetectorService {
         'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task'
       ];
 
-      // Try GPU delegate first, fallback to CPU delegate
+      // CRITICAL FOR IOS/IPAD: On iOS Safari, WebGL inside WebAssembly (GPU delegate) frequently
+      // crashes Metal shader compiler or causes WebGL context loss when sharing with the camera canvas.
+      // CPU delegate (WASM SIMD) is rock-solid, ultra-fast, and avoids GPU process crashes on Apple devices.
+      const isApple = isIOS();
+      const preferredDelegates: Array<'CPU' | 'GPU'> = isApple ? ['CPU', 'GPU'] : ['GPU', 'CPU'];
+
       let landmarker: PoseLandmarker | null = null;
 
       for (const modelPath of modelPaths) {
-        try {
-          console.log(`[PoseDetector] Trying model from: ${modelPath} (GPU)`);
-          landmarker = await PoseLandmarker.createFromOptions(vision, {
-            baseOptions: {
-              modelAssetPath: modelPath,
-              delegate: 'GPU',
-            },
-            runningMode: 'VIDEO',
-            numPoses: 1,
-            minPoseDetectionConfidence: 0.45,
-            minPosePresenceConfidence: 0.45,
-            minTrackingConfidence: 0.45,
-          });
-          if (landmarker) break;
-        } catch (gpuErr) {
-          console.warn(`[PoseDetector] GPU model init failed for ${modelPath}, trying CPU...`, gpuErr);
+        for (const delegate of preferredDelegates) {
           try {
+            console.log(`[PoseDetector] Trying model from: ${modelPath} (${delegate} delegate)`);
             landmarker = await PoseLandmarker.createFromOptions(vision, {
               baseOptions: {
                 modelAssetPath: modelPath,
-                delegate: 'CPU',
+                delegate: delegate,
               },
               runningMode: 'VIDEO',
               numPoses: 1,
@@ -81,11 +74,15 @@ export class PoseDetectorService {
               minPosePresenceConfidence: 0.45,
               minTrackingConfidence: 0.45,
             });
-            if (landmarker) break;
-          } catch (cpuErr) {
-            console.warn(`[PoseDetector] CPU model init failed for ${modelPath}`, cpuErr);
+            if (landmarker) {
+              console.log(`[PoseDetector] Model loaded successfully with ${delegate} delegate.`);
+              break;
+            }
+          } catch (delErr) {
+            console.warn(`[PoseDetector] Model init failed for ${modelPath} (${delegate}):`, delErr);
           }
         }
+        if (landmarker) break;
       }
 
       if (!landmarker) {
@@ -107,19 +104,29 @@ export class PoseDetectorService {
   }
 
   /**
-   * Run pose detection throttled to ~30 FPS (every 33ms)
-   * Avoids depending on video.currentTime which stays 0 on live WebRTC in mobile Safari!
+   * Run pose detection throttled for mobile responsiveness
+   * iOS devices use ~45ms (~22 FPS) to eliminate thermal throttling and UI stutter
    */
   public detectPose(video: HTMLVideoElement, timestampMs: number): NormalizedLandmark[] | null {
-    if (!this.poseLandmarker || video.readyState < 2) {
+    if (
+      !this.poseLandmarker ||
+      video.readyState < 2 ||
+      video.videoWidth === 0 ||
+      video.videoHeight === 0 ||
+      video.paused
+    ) {
       return this.cachedLandmarks;
     }
 
-    // Throttle to every 30ms (~33fps) to avoid saturating mobile CPU/GPU
-    if (timestampMs - this.lastDetectTimeMs >= 30) {
-      this.lastDetectTimeMs = timestampMs;
+    // Adaptive throttle: 45ms on iOS/mobile to keep 60fps render loop butter-smooth, 30ms on desktop
+    const throttleMs = isIOS() ? 45 : 30;
+    if (timestampMs - this.lastDetectTimeMs >= throttleMs) {
+      // Guarantee strictly monotonically increasing timestamp for MediaPipe WASM
+      const safeTimestamp = Math.max(Math.round(timestampMs), this.lastDetectTimeMs + 1);
+      this.lastDetectTimeMs = safeTimestamp;
+
       try {
-        const result: PoseLandmarkerResult = this.poseLandmarker.detectForVideo(video, timestampMs);
+        const result: PoseLandmarkerResult = this.poseLandmarker.detectForVideo(video, safeTimestamp);
         if (result.landmarks && result.landmarks.length > 0 && result.landmarks[0].length > 0) {
           this.cachedLandmarks = result.landmarks[0] as NormalizedLandmark[];
         } else {

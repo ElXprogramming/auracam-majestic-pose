@@ -87,7 +87,7 @@ export const ControlsDrawer: React.FC<ControlsDrawerProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-black/60 backdrop-blur-sm animate-fadeIn">
-      <div className="w-full max-w-sm h-full glass-panel border-l border-white/10 p-5 sm:p-6 flex flex-col justify-between overflow-y-auto animate-slideLeft">
+      <div className="w-full max-w-sm h-full glass-panel border-l border-white/10 p-5 sm:p-6 flex flex-col justify-between overflow-y-auto animate-slideLeft safe-area-top safe-area-bottom safe-area-right">
         <div className="space-y-5">
           {/* Header */}
           <div className="flex items-center justify-between pb-3 border-b border-white/10">
