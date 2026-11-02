@@ -19,6 +19,8 @@ export const RecordModal: React.FC<RecordModalProps> = ({
   const [downloaded, setDownloaded] = useState(false);
   const [isPreviewMuted, setIsPreviewMuted] = useState(false);
   const isAppleDevice = isIOS();
+  // Default to .mov on Apple devices (iPhone/iPad) for native QuickTime / Photos app compatibility
+  const [selectedFormat, setSelectedFormat] = useState<'mov' | 'mp4'>(isAppleDevice ? 'mov' : 'mp4');
 
   // Safely initiate video playback on iOS Safari
   useEffect(() => {
@@ -61,16 +63,23 @@ export const RecordModal: React.FC<RecordModalProps> = ({
   };
 
   const handleDownload = () => {
-    if (!videoUrl) return;
-    const a = document.createElement('a');
-    a.href = videoUrl;
+    if (!videoUrl || !videoBlob) return;
     const dateStr = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    // Determine extension based on blob type
-    const ext = videoBlob?.type.includes('mp4') ? 'mp4' : 'webm';
+    const ext = selectedFormat;
+    const mimeType = ext === 'mov' ? 'video/quicktime' : 'video/mp4';
+
+    // Construct blob with corresponding MIME type
+    const exportBlob = new Blob([videoBlob], { type: mimeType });
+    const exportUrl = URL.createObjectURL(exportBlob);
+
+    const a = document.createElement('a');
+    a.href = exportUrl;
     a.download = `AuraCam-MajesticPose-${dateStr}.${ext}`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(exportUrl), 5000);
+
     setDownloaded(true);
     setTimeout(() => setDownloaded(false), 3000);
   };
@@ -78,10 +87,11 @@ export const RecordModal: React.FC<RecordModalProps> = ({
   const handleShare = async () => {
     if (!videoBlob || !navigator.share) return;
     try {
-      const isMp4 = videoBlob.type.includes('mp4');
-      const ext = isMp4 ? 'mp4' : 'webm';
-      const file = new File([videoBlob], `auracam-majestic.${ext}`, {
-        type: isMp4 ? 'video/mp4' : 'video/webm',
+      const dateStr = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const ext = selectedFormat;
+      const mimeType = ext === 'mov' ? 'video/quicktime' : 'video/mp4';
+      const file = new File([videoBlob], `AuraCam-MajesticPose-${dateStr}.${ext}`, {
+        type: mimeType,
       });
 
       // Check if file sharing is supported by native navigator.canShare
@@ -128,7 +138,7 @@ export const RecordModal: React.FC<RecordModalProps> = ({
         </div>
 
         {/* Video Preview in 9:16 portrait style */}
-        <div className="relative w-full aspect-[9/16] max-h-[55vh] bg-black rounded-xl overflow-hidden shadow-inner border border-white/15 flex items-center justify-center">
+        <div className="relative w-full aspect-[9/16] max-h-[50vh] bg-black rounded-xl overflow-hidden shadow-inner border border-white/15 flex items-center justify-center">
           <video
             ref={videoRef}
             src={videoUrl}
@@ -148,41 +158,96 @@ export const RecordModal: React.FC<RecordModalProps> = ({
             {isPreviewMuted ? <VolumeX className="w-4 h-4 text-red-400" /> : <Volume2 className="w-4 h-4 text-amber-400" />}
           </button>
 
-          {/* TikTok Badge */}
-          <div className="absolute top-2.5 right-2.5 px-2.5 py-1 rounded-full bg-black/60 backdrop-blur-sm border border-white/20 text-[10px] font-bold tracking-wider uppercase text-white/90">
-            TikTok 9:16
+          {/* Format & Aspect Badge */}
+          <div className="absolute top-2.5 right-2.5 px-2.5 py-1 rounded-full bg-black/60 backdrop-blur-sm border border-white/20 text-[10px] font-bold tracking-wider uppercase text-amber-300">
+            .{selectedFormat.toUpperCase()} • 9:16
+          </div>
+        </div>
+
+        {/* Video Format Selector */}
+        <div className="w-full flex items-center justify-between px-3 py-2 rounded-xl bg-white/[0.05] border border-white/10 text-xs mt-3">
+          <div className="flex items-center gap-1.5 text-white/70">
+            <span className="font-semibold text-white/90">Output Format:</span>
+            <span className="text-[11px] text-amber-300 font-mono">
+              {selectedFormat === 'mov' ? 'QuickTime (.MOV)' : 'MPEG-4 (.MP4)'}
+            </span>
+          </div>
+          <div className="flex items-center bg-black/60 p-0.5 rounded-lg border border-white/10">
+            <button
+              onClick={() => setSelectedFormat('mov')}
+              className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition-all ${
+                selectedFormat === 'mov'
+                  ? 'bg-amber-400 text-black shadow-sm'
+                  : 'text-white/60 hover:text-white'
+              }`}
+              title="Apple QuickTime format (.MOV) - Recommended for iPhone and iPad"
+            >
+              .MOV {isAppleDevice ? '🍎' : ''}
+            </button>
+            <button
+              onClick={() => setSelectedFormat('mp4')}
+              className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition-all ${
+                selectedFormat === 'mp4'
+                  ? 'bg-amber-400 text-black shadow-sm'
+                  : 'text-white/60 hover:text-white'
+              }`}
+              title="Universal MP4 format"
+            >
+              .MP4
+            </button>
           </div>
         </div>
 
         {/* iOS Photo Library Tip */}
         {isAppleDevice && (
-          <div className="w-full mt-2.5 px-3 py-1.5 rounded-xl bg-amber-500/10 border border-amber-500/25 flex items-center gap-2 text-[11px] text-amber-200/90">
+          <div className="w-full mt-2 px-3 py-1.5 rounded-xl bg-amber-500/10 border border-amber-500/25 flex items-center gap-2 text-[11px] text-amber-200/90">
             <Info className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-            <span>Tap <strong>Share Video</strong> ➔ <strong>Save Video</strong> to save directly to iOS Photos!</span>
+            <span>Tap <strong>Save to Photos</strong> ➔ <strong>Save Video</strong> to view directly in your iPhone/iPad Camera Roll!</span>
           </div>
         )}
 
         {/* Action Buttons */}
         <div className="w-full mt-3 space-y-2.5">
-          <button
-            onClick={handleDownload}
-            className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-amber-500 via-yellow-400 to-amber-500 text-black font-extrabold text-sm tracking-wide shadow-lg shadow-amber-500/25 flex items-center justify-center gap-2 hover:brightness-110 active:scale-[0.98] transition-all"
-          >
-            {downloaded ? (
-              <>
-                <CheckCircle2 className="w-4 h-4 text-black" />
-                Downloaded!
-              </>
-            ) : (
-              <>
-                <Download className="w-4 h-4 text-black" />
-                Download Clip (TikTok Ready)
-              </>
-            )}
-          </button>
+          {/* Primary Action Button */}
+          {isAppleDevice && typeof navigator !== 'undefined' && 'share' in navigator ? (
+            <button
+              onClick={handleShare}
+              className="w-full py-3.5 px-4 rounded-xl bg-gradient-to-r from-amber-500 via-yellow-400 to-amber-500 text-black font-extrabold text-sm tracking-wide shadow-lg shadow-amber-500/25 flex items-center justify-center gap-2 hover:brightness-110 active:scale-[0.98] transition-all"
+            >
+              <Share2 className="w-4 h-4 text-black" />
+              Save to Photos / Camera Roll (.{selectedFormat.toUpperCase()})
+            </button>
+          ) : (
+            <button
+              onClick={handleDownload}
+              className="w-full py-3.5 px-4 rounded-xl bg-gradient-to-r from-amber-500 via-yellow-400 to-amber-500 text-black font-extrabold text-sm tracking-wide shadow-lg shadow-amber-500/25 flex items-center justify-center gap-2 hover:brightness-110 active:scale-[0.98] transition-all"
+            >
+              {downloaded ? (
+                <>
+                  <CheckCircle2 className="w-4 h-4 text-black" />
+                  Saved!
+                </>
+              ) : (
+                <>
+                  <Download className="w-4 h-4 text-black" />
+                  Download Clip (.{selectedFormat.toUpperCase()})
+                </>
+              )}
+            </button>
+          )}
 
+          {/* Secondary Action Grid */}
           <div className="grid grid-cols-2 gap-2">
-            {typeof navigator !== 'undefined' && 'share' in navigator ? (
+            {isAppleDevice && typeof navigator !== 'undefined' && 'share' in navigator ? (
+              <button
+                onClick={handleDownload}
+                className="py-2.5 px-3 rounded-xl bg-white/[0.08] hover:bg-white/[0.14] text-white flex items-center justify-center gap-2 text-xs font-semibold tracking-wide transition-colors"
+                title="Download directly to Files app"
+              >
+                {downloaded ? <CheckCircle2 className="w-4 h-4 text-amber-400" /> : <Download className="w-4 h-4 text-cyan-400" />}
+                {downloaded ? 'Saved!' : `Download .${selectedFormat.toUpperCase()}`}
+              </button>
+            ) : typeof navigator !== 'undefined' && 'share' in navigator ? (
               <button
                 onClick={handleShare}
                 className="py-2.5 px-3 rounded-xl bg-white/[0.08] hover:bg-white/[0.14] text-white flex items-center justify-center gap-2 text-xs font-semibold tracking-wide transition-colors"

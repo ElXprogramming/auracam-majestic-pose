@@ -83,6 +83,19 @@ export class MajesticAudioManager {
     this.gainNode.connect(this.ctx.destination);
     this.gainNode.connect(this.streamDestination);
 
+    // Continuous silent carrier oscillator to keep Web Audio continuously clocking active PCM frames.
+    // This prevents iOS WebKit AAC encoder from dropping frames or writing invalid moov sample tables when idle.
+    try {
+      const silentOsc = this.ctx.createOscillator();
+      const silentGain = this.ctx.createGain();
+      silentGain.gain.setValueAtTime(0, this.ctx.currentTime);
+      silentOsc.connect(silentGain);
+      silentGain.connect(this.streamDestination);
+      silentOsc.start();
+    } catch {
+      // ignore
+    }
+
     await this.loadAudioTrack();
   }
 
