@@ -14,8 +14,11 @@ import {
   Maximize2,
   Minimize2,
   ZoomIn,
-  RotateCcw
+  RotateCcw,
+  Camera as CameraIcon,
+  Video
 } from 'lucide-react';
+import { CameraDeviceInfo, AspectRatioMode } from '../utils/cameraManager';
 
 interface ControlsDrawerProps {
   isOpen: boolean;
@@ -41,6 +44,12 @@ interface ControlsDrawerProps {
   onFitModeToggle: () => void;
   cameraZoom: number;
   onCameraZoomChange: (v: number) => void;
+  availableCameras: CameraDeviceInfo[];
+  selectedDeviceId?: string;
+  onSelectCamera: (deviceId: string) => void;
+  aspectRatioMode: AspectRatioMode;
+  onAspectRatioChange: (mode: AspectRatioMode) => void;
+  cameraResolution: { width: number; height: number };
 }
 
 export const ControlsDrawer: React.FC<ControlsDrawerProps> = ({
@@ -67,19 +76,25 @@ export const ControlsDrawer: React.FC<ControlsDrawerProps> = ({
   onFitModeToggle,
   cameraZoom,
   onCameraZoomChange,
+  availableCameras,
+  selectedDeviceId,
+  onSelectCamera,
+  aspectRatioMode,
+  onAspectRatioChange,
+  cameraResolution,
 }) => {
   if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-black/60 backdrop-blur-sm animate-fadeIn">
-      <div className="w-full max-w-sm h-full glass-panel border-l border-white/10 p-6 flex flex-col justify-between overflow-y-auto animate-slideLeft">
-        <div className="space-y-6">
+      <div className="w-full max-w-sm h-full glass-panel border-l border-white/10 p-5 sm:p-6 flex flex-col justify-between overflow-y-auto animate-slideLeft">
+        <div className="space-y-5">
           {/* Header */}
-          <div className="flex items-center justify-between pb-4 border-b border-white/10">
+          <div className="flex items-center justify-between pb-3 border-b border-white/10">
             <div className="flex items-center gap-2">
               <Sliders className="w-5 h-5 text-amber-400" />
               <h3 className="font-cinzel text-lg font-bold tracking-wide text-white">
-                Camera & Filter Controls
+                Camera & Aura Controls
               </h3>
             </div>
             <button
@@ -90,14 +105,82 @@ export const ControlsDrawer: React.FC<ControlsDrawerProps> = ({
             </button>
           </div>
 
+          {/* Active Camera Feed Info Badge */}
+          {cameraResolution.width > 0 && (
+            <div className="px-3 py-2 rounded-xl bg-white/[0.04] border border-white/10 flex items-center justify-between text-[11px] text-white/70">
+              <span className="flex items-center gap-1.5">
+                <Video className="w-3.5 h-3.5 text-cyan-400" />
+                Stream: <strong className="text-white font-mono">{cameraResolution.width}x{cameraResolution.height}</strong>
+              </span>
+              <span className="px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 font-mono text-[10px]">
+                {aspectRatioMode === 'wide-sensor' ? '3:4 Full Sensor' : aspectRatioMode === 'portrait-9-16' ? '9:16 Portrait' : '16:9 Landscape'}
+              </span>
+            </div>
+          )}
+
+          {/* Camera Selection Dropdown (if multiple cameras available) */}
+          {availableCameras.length > 1 && (
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-white/80 flex items-center gap-1.5">
+                <CameraIcon className="w-3.5 h-3.5 text-amber-400" />
+                Select Camera Lens
+              </label>
+              <select
+                value={selectedDeviceId || ''}
+                onChange={(e) => onSelectCamera(e.target.value)}
+                className="w-full py-2 px-3 rounded-xl bg-white/[0.07] border border-white/15 text-xs text-white focus:outline-none focus:border-amber-400 transition-colors"
+              >
+                {availableCameras.map((cam, idx) => (
+                  <option key={cam.deviceId || idx} value={cam.deviceId} className="bg-[#121218] text-white">
+                    {cam.label || `Camera ${idx + 1}`} {cam.isWideAngle ? '✨ (Ultra-Wide)' : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {/* Sensor Aspect Ratio Mode (Cuts vs Full Field of View) */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-semibold text-amber-300">
+                Camera Field of View / Sensor Mode
+              </span>
+            </div>
+            <div className="grid grid-cols-2 gap-1.5">
+              <button
+                onClick={() => onAspectRatioChange('wide-sensor')}
+                className={`py-2 px-2.5 rounded-xl border text-[11px] font-bold text-center transition-all ${
+                  aspectRatioMode === 'wide-sensor'
+                    ? 'bg-amber-500/25 border-amber-400 text-amber-200 shadow-sm shadow-amber-500/20'
+                    : 'bg-white/[0.04] border-white/10 text-white/70 hover:bg-white/[0.08]'
+                }`}
+              >
+                <div>✨ Full Sensor (3:4)</div>
+                <div className="text-[9px] font-normal opacity-75">Widest FOV, Zero Crop</div>
+              </button>
+
+              <button
+                onClick={() => onAspectRatioChange('portrait-9-16')}
+                className={`py-2 px-2.5 rounded-xl border text-[11px] font-bold text-center transition-all ${
+                  aspectRatioMode === 'portrait-9-16'
+                    ? 'bg-amber-500/25 border-amber-400 text-amber-200 shadow-sm shadow-amber-500/20'
+                    : 'bg-white/[0.04] border-white/10 text-white/70 hover:bg-white/[0.08]'
+                }`}
+              >
+                <div>TikTok (9:16)</div>
+                <div className="text-[9px] font-normal opacity-75">Standard Vertical</div>
+              </button>
+            </div>
+          </div>
+
           {/* Sliders */}
-          <div className="space-y-5">
+          <div className="space-y-4 pt-1">
             {/* Camera Zoom / Field of View */}
-            <div className="space-y-2 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30">
+            <div className="space-y-1.5 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30">
               <div className="flex items-center justify-between text-xs">
                 <span className="flex items-center gap-1.5 text-amber-300 font-bold">
                   <ZoomIn className="w-3.5 h-3.5 text-amber-400" />
-                  Camera Zoom / FOV Scale
+                  Camera Zoom / Scale
                 </span>
                 <div className="flex items-center gap-1.5">
                   <span className="text-amber-300 font-mono font-bold">
@@ -125,13 +208,13 @@ export const ControlsDrawer: React.FC<ControlsDrawerProps> = ({
               />
               <div className="flex justify-between text-[10px] text-white/50">
                 <span>0.65x (Ultra Wide)</span>
-                <span>1.0x (Natural)</span>
-                <span>1.25x (Tight)</span>
+                <span>1.0x (Standard)</span>
+                <span>1.25x (Close)</span>
               </div>
             </div>
 
             {/* Bloom Intensity */}
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               <div className="flex items-center justify-between text-xs">
                 <span className="flex items-center gap-1.5 text-white/90 font-medium">
                   <Sparkles className="w-3.5 h-3.5 text-amber-400" />
@@ -150,15 +233,10 @@ export const ControlsDrawer: React.FC<ControlsDrawerProps> = ({
                 onChange={(e) => onBloomChange(parseFloat(e.target.value))}
                 className="w-full accent-amber-500"
               />
-              <div className="flex justify-between text-[10px] text-white/40">
-                <span>Subtle</span>
-                <span>Balanced</span>
-                <span>Hyper-Angelic</span>
-              </div>
             </div>
 
             {/* Audio Volume */}
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               <div className="flex items-center justify-between text-xs">
                 <button
                   onClick={onMuteToggle}
@@ -190,7 +268,7 @@ export const ControlsDrawer: React.FC<ControlsDrawerProps> = ({
             </div>
 
             {/* Pose Sensitivity */}
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               <div className="flex items-center justify-between text-xs">
                 <span className="flex items-center gap-1.5 text-white/90 font-medium">
                   <Activity className="w-3.5 h-3.5 text-cyan-400" />
@@ -209,17 +287,13 @@ export const ControlsDrawer: React.FC<ControlsDrawerProps> = ({
                 onChange={(e) => onSensitivityChange(parseFloat(e.target.value))}
                 className="w-full accent-cyan-500"
               />
-              <div className="flex justify-between text-[10px] text-white/40">
-                <span>Strict (Exact form)</span>
-                <span>Lenient (Quick trigger)</span>
-              </div>
             </div>
           </div>
 
           {/* Quick Action Toggles */}
-          <div className="pt-2 border-t border-white/10 space-y-2.5">
+          <div className="pt-2 border-t border-white/10 space-y-2">
             <span className="text-[11px] uppercase tracking-wider text-white/50 font-bold block mb-1">
-              Framing & Display Mode
+              Display & Lens Toggles
             </span>
 
             {/* Framing Mode Toggle */}
@@ -233,7 +307,7 @@ export const ControlsDrawer: React.FC<ControlsDrawerProps> = ({
             >
               <span className="flex items-center gap-2">
                 {fitMode === 'contain' ? <Minimize2 className="w-4 h-4 text-amber-400" /> : <Maximize2 className="w-4 h-4" />}
-                {fitMode === 'contain' ? 'Wide Angle / Fit (No Crop)' : 'Fill Screen (Cover)'}
+                {fitMode === 'contain' ? 'Wide Angle / Fit (Zero Crop)' : 'Fill Screen (Cover)'}
               </span>
               <span className="text-[10px] font-bold uppercase">{fitMode === 'contain' ? 'FIT' : 'FILL'}</span>
             </button>
@@ -278,9 +352,9 @@ export const ControlsDrawer: React.FC<ControlsDrawerProps> = ({
               >
                 <span className="flex items-center gap-2">
                   <SwitchCamera className="w-4 h-4 text-amber-400" />
-                  Switch Front / Back Camera
+                  Flip Front / Rear Camera
                 </span>
-                <span className="text-[10px] font-bold uppercase">SWITCH</span>
+                <span className="text-[10px] font-bold uppercase">FLIP</span>
               </button>
             )}
 
@@ -303,13 +377,13 @@ export const ControlsDrawer: React.FC<ControlsDrawerProps> = ({
         </div>
 
         {/* Bottom Help Button */}
-        <div className="pt-4 border-t border-white/10">
+        <div className="pt-3 border-t border-white/10">
           <button
             onClick={() => {
               onClose();
               onOpenGuide();
             }}
-            className="w-full py-2.5 px-3 rounded-xl bg-white/[0.07] hover:bg-white/[0.12] text-white flex items-center justify-center gap-2 text-xs font-semibold tracking-wide transition-colors"
+            className="w-full py-2 px-3 rounded-xl bg-white/[0.07] hover:bg-white/[0.12] text-white flex items-center justify-center gap-2 text-xs font-semibold tracking-wide transition-colors"
           >
             <HelpCircle className="w-4 h-4 text-amber-400" />
             Pose Instructions & Tips

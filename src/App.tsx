@@ -28,20 +28,36 @@ import {
   NormalizedLandmark 
 } from './utils/poseClassifier';
 import { renderNeonSkeleton } from './utils/skeletonRenderer';
+import { 
+  getAvailableCameras, 
+  buildMediaConstraints, 
+  applyTrackWideZoom, 
+  CameraDeviceInfo, 
+  AspectRatioMode 
+} from './utils/cameraManager';
 import { PoseBadge } from './components/PoseBadge';
 import { ControlsDrawer } from './components/ControlsDrawer';
 import { PoseGuideModal } from './components/PoseGuideModal';
 import { RecordModal } from './components/RecordModal';
 
 export const App: React.FC = () => {
-  // State
+  // Determine if mobile portrait
+  const isInitialMobile = typeof window !== 'undefined' ? window.innerWidth < 768 : true;
+
+  // Camera State
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [isModelLoading, setIsModelLoading] = useState(false);
   const [isModelReady, setIsModelReady] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
 
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
-  const [hasMultipleCameras, setHasMultipleCameras] = useState(false);
+  const [availableCameras, setAvailableCameras] = useState<CameraDeviceInfo[]>([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string | undefined>(undefined);
+  const [aspectRatioMode, setAspectRatioMode] = useState<AspectRatioMode>(
+    isInitialMobile ? 'wide-sensor' : 'landscape-16-9'
+  );
+  const [cameraResolution, setCameraResolution] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
+
   const [isMirrored, setIsMirrored] = useState(true);
   const [showSkeleton, setShowSkeleton] = useState(true);
   const [fitMode, setFitMode] = useState<'contain' | 'cover'>('contain'); // Default to 'contain' for wide-angle full view without cropping!
@@ -89,14 +105,11 @@ export const App: React.FC = () => {
   const lastPoseRef = useRef<PoseType | null>(null);
   const currentLandmarksRef = useRef<NormalizedLandmark[] | null>(null);
 
-  // Check camera devices
+  // Enumerate cameras on mount
   useEffect(() => {
-    if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
-      navigator.mediaDevices.enumerateDevices().then((devices) => {
-        const videoInputs = devices.filter((d) => d.kind === 'videoinput');
-        setHasMultipleCameras(videoInputs.length > 1);
-      }).catch(() => {});
-    }
+    getAvailableCameras().then((cams) => {
+      setAvailableCameras(cams);
+    });
   }, []);
 
   // Initialize Audio & Pose Services
@@ -151,8 +164,12 @@ export const App: React.FC = () => {
     }
   }, []);
 
-  // Start Camera Stream
-  const startCamera = async () => {
+  // Start Camera Stream with specified configuration
+  const startCameraWithConfig = async (
+    nextFacing: 'user' | 'environment',
+    nextDeviceId?: string,
+    nextAspectMode?: AspectRatioMode
+  ) => {
     setCameraError(null);
 
     // Initialize AudioContext on user gesture
@@ -160,49 +177,53 @@ export const App: React.FC = () => {
       await audioManagerRef.current.init();
     }
 
-    try {
-      // Avoid forcing a narrow portrait ratio which triggers hardware crop on 4:3 phone sensors
-      const constraints: MediaStreamConstraints = {
-        audio: false,
-        video: {
-          facingMode: facingMode,
-          width: { ideal: 1920, min: 640 },
-          height: { ideal: 1080, min: 480 },
-        },
-      };
+    // Stop existing stream if any
+    if (videoRef.current && videoRef.current.srcObject) {
+      const existing = videoRef.current.srcObject as MediaStream;
+      existing.getTracks().forEach((t) => t.stop());
+    }
 
+    const aspect = nextAspectMode || aspectRatioMode;
+    const constraints = buildMediaConstraints({
+      facingMode: nextFacing,
+      deviceId: nextDeviceId,
+      aspectRatioMode: aspect,
+    });
+
+    try {
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       const track = stream.getVideoTracks()[0];
       if (track) {
-        const capabilities = (track as unknown as { getCapabilities?: () => { zoom?: { min: number } } }).getCapabilities?.();
-        if (capabilities && capabilities.zoom && 'min' in capabilities.zoom) {
-          try {
-            await (track as unknown as { applyConstraints: (c: unknown) => Promise<void> }).applyConstraints({
-              advanced: [{ zoom: capabilities.zoom.min || 1.0 }]
-            });
-            console.log('Applied wide-angle min zoom:', capabilities.zoom.min);
-          } catch (e) {
-            console.warn('Could not apply min zoom:', e);
-          }
-        }
+        await applyTrackWideZoom(track);
       }
 
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
         setIsCameraActive(true);
+
+        const vW = videoRef.current.videoWidth || 1280;
+        const vH = videoRef.current.videoHeight || 720;
+        setCameraResolution({ width: vW, height: vH });
       }
+
+      // Refresh camera devices list with actual device permissions granted
+      getAvailableCameras().then((cams) => setAvailableCameras(cams));
     } catch (err: unknown) {
-      console.warn('Initial camera constraint failed, retrying basic video constraint:', err);
+      console.warn('Initial camera constraint failed, retrying fallback constraints:', err);
       try {
         const fallbackStream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: facingMode },
+          video: { facingMode: nextFacing },
           audio: false,
         });
         if (videoRef.current) {
           videoRef.current.srcObject = fallbackStream;
           await videoRef.current.play();
           setIsCameraActive(true);
+          setCameraResolution({
+            width: videoRef.current.videoWidth || 1280,
+            height: videoRef.current.videoHeight || 720,
+          });
         }
       } catch (finalErr: unknown) {
         console.error('Camera access denied:', finalErr);
@@ -212,47 +233,35 @@ export const App: React.FC = () => {
     }
   };
 
+  const startCamera = () => {
+    startCameraWithConfig(facingMode, selectedDeviceId, aspectRatioMode);
+  };
+
   // Switch between front and rear cameras
   const switchCamera = async () => {
     const nextMode = facingMode === 'user' ? 'environment' : 'user';
     setFacingMode(nextMode);
     setIsMirrored(nextMode === 'user');
+    setSelectedDeviceId(undefined); // Reset device ID to allow default facing
+    await startCameraWithConfig(nextMode, undefined, aspectRatioMode);
+  };
 
-    if (videoRef.current && videoRef.current.srcObject) {
-      const stream = videoRef.current.srcObject as MediaStream;
-      stream.getTracks().forEach((track) => track.stop());
+  // Switch specific camera device
+  const handleSelectCamera = async (deviceId: string) => {
+    setSelectedDeviceId(deviceId);
+    const targetCam = availableCameras.find((c) => c.deviceId === deviceId);
+    if (targetCam && targetCam.facing !== 'unknown') {
+      setFacingMode(targetCam.facing);
+      setIsMirrored(targetCam.facing === 'user');
     }
+    await startCameraWithConfig(facingMode, deviceId, aspectRatioMode);
+  };
 
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { 
-          facingMode: nextMode,
-          width: { ideal: 1920, min: 640 },
-          height: { ideal: 1080, min: 480 },
-        },
-        audio: false,
-      });
-
-      const track = stream.getVideoTracks()[0];
-      if (track) {
-        const capabilities = (track as unknown as { getCapabilities?: () => { zoom?: { min: number } } }).getCapabilities?.();
-        if (capabilities && capabilities.zoom && 'min' in capabilities.zoom) {
-          try {
-            await (track as unknown as { applyConstraints: (c: unknown) => Promise<void> }).applyConstraints({
-              advanced: [{ zoom: capabilities.zoom.min || 1.0 }]
-            });
-          } catch (e) {
-            console.warn('Could not apply min zoom:', e);
-          }
-        }
-      }
-
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
-      }
-    } catch (err) {
-      console.error('Failed to switch camera:', err);
+  // Switch aspect ratio mode (3:4 Wide Sensor vs 9:16 Portrait)
+  const handleAspectRatioChange = async (mode: AspectRatioMode) => {
+    setAspectRatioMode(mode);
+    if (isCameraActive) {
+      await startCameraWithConfig(facingMode, selectedDeviceId, mode);
     }
   };
 
@@ -274,6 +283,7 @@ export const App: React.FC = () => {
       if (webglCanvas.width !== videoWidth || webglCanvas.height !== videoHeight) {
         webglCanvas.width = videoWidth;
         webglCanvas.height = videoHeight;
+        setCameraResolution({ width: videoWidth, height: videoHeight });
       }
 
       if (skeletonCanvas && (skeletonCanvas.width !== videoWidth || skeletonCanvas.height !== videoHeight)) {
@@ -357,7 +367,7 @@ export const App: React.FC = () => {
     }
 
     animFrameIdRef.current = requestAnimationFrame(renderFrame);
-  }, [detectedPose, forceFilter, isMirrored, poseSensitivity, showSkeleton, bloomIntensity, triggerMajesticSparkles]);
+  }, [detectedPose, forceFilter, isMirrored, poseSensitivity, showSkeleton, bloomIntensity, cameraZoom, triggerMajesticSparkles]);
 
   useEffect(() => {
     if (isCameraActive) {
@@ -454,7 +464,7 @@ export const App: React.FC = () => {
   };
 
   return (
-    <div className="relative w-screen h-screen overflow-hidden bg-[#09090b] flex flex-col items-center justify-center">
+    <div className="fixed inset-0 w-full h-[100dvh] overflow-hidden bg-[#09090b] flex flex-col items-center justify-center">
       {/* Hidden Source Video Element */}
       <video
         ref={videoRef}
@@ -560,6 +570,40 @@ export const App: React.FC = () => {
             </div>
           )}
 
+          {/* Floating On-Screen Quick Lens & FOV Selector */}
+          <div className="absolute bottom-28 z-30 flex items-center gap-1.5 p-1 rounded-full glass-panel border border-white/15 shadow-xl shadow-black/50">
+            <button
+              onClick={() => handleAspectRatioChange('wide-sensor')}
+              className={`px-3 py-1 rounded-full text-xs font-bold tracking-wide transition-all ${
+                aspectRatioMode === 'wide-sensor'
+                  ? 'bg-gradient-to-r from-amber-400 to-yellow-400 text-black shadow-md shadow-amber-400/30'
+                  : 'text-white/75 hover:text-white'
+              }`}
+            >
+              0.5x Ultra Wide
+            </button>
+            <button
+              onClick={() => handleAspectRatioChange('portrait-9-16')}
+              className={`px-3 py-1 rounded-full text-xs font-bold tracking-wide transition-all ${
+                aspectRatioMode === 'portrait-9-16'
+                  ? 'bg-gradient-to-r from-amber-400 to-yellow-400 text-black shadow-md shadow-amber-400/30'
+                  : 'text-white/75 hover:text-white'
+              }`}
+            >
+              9:16 Crop
+            </button>
+            <button
+              onClick={() => setFitMode(fitMode === 'contain' ? 'cover' : 'contain')}
+              className={`px-3 py-1 rounded-full text-xs font-bold tracking-wide transition-all ${
+                fitMode === 'contain'
+                  ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-400/40'
+                  : 'text-white/75 hover:text-white'
+              }`}
+            >
+              {fitMode === 'contain' ? 'Fit View' : 'Fill Screen'}
+            </button>
+          </div>
+
           {/* Bottom Floating Control Bar */}
           <footer className="absolute bottom-0 inset-x-0 p-5 sm:p-8 flex items-center justify-around z-30 max-w-lg mx-auto">
             {/* Mirror Toggle */}
@@ -596,12 +640,12 @@ export const App: React.FC = () => {
               )}
             </div>
 
-            {/* Switch Camera Button (or Pose Guide if single camera) */}
-            {hasMultipleCameras ? (
+            {/* Switch Camera Button (or Pose Guide) */}
+            {availableCameras.length > 1 ? (
               <button
                 onClick={switchCamera}
                 className="p-3.5 rounded-full glass-panel text-white/80 hover:text-white border border-white/10 transition-colors"
-                title="Switch Camera"
+                title="Switch Front / Rear Camera"
               >
                 <RotateCw className="w-5 h-5" />
               </button>
@@ -698,7 +742,7 @@ export const App: React.FC = () => {
         isMirrored={isMirrored}
         onMirrorToggle={() => setIsMirrored(!isMirrored)}
         onSwitchCamera={switchCamera}
-        hasMultipleCameras={hasMultipleCameras}
+        hasMultipleCameras={availableCameras.length > 1}
         showSkeleton={showSkeleton}
         onSkeletonToggle={() => setShowSkeleton(!showSkeleton)}
         onOpenGuide={() => setIsGuideOpen(true)}
@@ -708,6 +752,12 @@ export const App: React.FC = () => {
         onFitModeToggle={() => setFitMode(fitMode === 'contain' ? 'cover' : 'contain')}
         cameraZoom={cameraZoom}
         onCameraZoomChange={setCameraZoom}
+        availableCameras={availableCameras}
+        selectedDeviceId={selectedDeviceId}
+        onSelectCamera={handleSelectCamera}
+        aspectRatioMode={aspectRatioMode}
+        onAspectRatioChange={handleAspectRatioChange}
+        cameraResolution={cameraResolution}
       />
 
       {/* Pose Guide Modal */}
