@@ -87,10 +87,8 @@ export class MajesticAudioManager {
     // This prevents iOS WebKit AAC encoder from dropping frames or writing invalid moov sample tables when idle.
     try {
       const silentOsc = this.ctx.createOscillator();
-      silentOsc.frequency.setValueAtTime(20, this.ctx.currentTime);
       const silentGain = this.ctx.createGain();
-      // Use sub-audible amplitude (0.00001) so WebKit does not optimize away the node as a pure zero signal
-      silentGain.gain.setValueAtTime(0.00001, this.ctx.currentTime);
+      silentGain.gain.setValueAtTime(0, this.ctx.currentTime);
       silentOsc.connect(silentGain);
       silentGain.connect(this.streamDestination);
       silentOsc.start();
@@ -252,64 +250,5 @@ export class MajesticAudioManager {
 
   public getAudioStreamDestination(): MediaStreamAudioDestinationNode | null {
     return this.streamDestination;
-  }
-
-  /**
-   * Play clean synthesized audio cues for gesture recognition, countdown, and record start/stop
-   */
-  public playCueChime(type: 'gesture_detected' | 'countdown_beep' | 'record_start' | 'record_stop'): void {
-    if (!this.ctx || this.isMuted) return;
-    if (this.ctx.state === 'suspended') {
-      this.ctx.resume().catch(() => {});
-    }
-
-    try {
-      const now = this.ctx.currentTime;
-      const osc = this.ctx.createOscillator();
-      const gain = this.ctx.createGain();
-
-      osc.connect(gain);
-      gain.connect(this.ctx.destination);
-
-      if (type === 'gesture_detected') {
-        // High ascending double-ping (confirmation of peace sign)
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(880, now);
-        osc.frequency.exponentialRampToValueAtTime(1320, now + 0.12);
-        gain.gain.setValueAtTime(0.2, now);
-        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.25);
-        osc.start(now);
-        osc.stop(now + 0.25);
-      } else if (type === 'countdown_beep') {
-        // Crisp metronome beep
-        osc.type = 'triangle';
-        osc.frequency.setValueAtTime(780, now);
-        gain.gain.setValueAtTime(0.25, now);
-        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
-        osc.start(now);
-        osc.stop(now + 0.15);
-      } else if (type === 'record_start') {
-        // Triumphant ascending chime
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(523.25, now); // C5
-        osc.frequency.setValueAtTime(659.25, now + 0.08); // E5
-        osc.frequency.setValueAtTime(783.99, now + 0.16); // G5
-        gain.gain.setValueAtTime(0.3, now);
-        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
-        osc.start(now);
-        osc.stop(now + 0.45);
-      } else if (type === 'record_stop') {
-        // Descending double chime
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(783.99, now);
-        osc.frequency.setValueAtTime(523.25, now + 0.1);
-        gain.gain.setValueAtTime(0.25, now);
-        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
-        osc.start(now);
-        osc.stop(now + 0.35);
-      }
-    } catch {
-      // ignore
-    }
   }
 }
