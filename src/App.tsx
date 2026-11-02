@@ -47,7 +47,7 @@ export const App: React.FC = () => {
 
   // Camera State
   const [isCameraActive, setIsCameraActive] = useState(false);
-  const [isModelLoading, setIsModelLoading] = useState(false);
+  const [, setIsModelLoading] = useState(false);
   const [isModelReady, setIsModelReady] = useState(false);
   const [modelStatus, setModelStatus] = useState<string>('Awakening Divine AI Vision...');
   const [modelError, setModelError] = useState<string | null>(null);
@@ -136,6 +136,16 @@ export const App: React.FC = () => {
     getAvailableCameras().then((cams) => {
       setAvailableCameras(cams);
     });
+  }, []);
+
+  // Check URL query parameters for direct modal / guide testing
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('guide') === '1') {
+        setIsGuideOpen(true);
+      }
+    }
   }, []);
 
   // Initialize Audio & Pose Services
@@ -661,6 +671,16 @@ export const App: React.FC = () => {
 
   return (
     <div className="fixed inset-0 w-full h-[100dvh] overflow-hidden bg-[#09090b] flex flex-col items-center justify-center">
+      {/* Ambient Celestial Aura Background on Welcome Screen */}
+      {!isCameraActive && (
+        <div className="absolute inset-0 pointer-events-none overflow-hidden flex items-center justify-center">
+          <div className="w-[720px] h-[720px] rounded-full bg-gradient-to-tr from-amber-600/20 via-yellow-500/10 to-transparent blur-3xl opacity-80" />
+          <div className="absolute top-0 inset-x-0 h-48 bg-gradient-to-b from-amber-500/10 via-amber-500/5 to-transparent" />
+          <div className="absolute -bottom-24 -right-24 w-96 h-96 rounded-full bg-amber-500/10 blur-3xl" />
+          <div className="absolute -top-24 -left-24 w-96 h-96 rounded-full bg-yellow-500/10 blur-3xl" />
+        </div>
+      )}
+
       {/* Off-screen Source Video Element (must NOT have display:none on iOS WebKit!) */}
       <video
         ref={videoRef}
@@ -929,13 +949,6 @@ export const App: React.FC = () => {
             <HelpCircle className="w-3.5 h-3.5" />
             How to strike the 4 gym poses
           </button>
-
-          {/* Loading status indicator */}
-          {isModelLoading && (
-            <p className="mt-4 text-[11px] text-amber-400/80 animate-pulse">
-              Pre-warming AI Pose Engine...
-            </p>
-          )}
         </main>
       )}
 
