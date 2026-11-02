@@ -1,23 +1,46 @@
 import React from 'react';
 import { PoseType } from '../utils/poseClassifier';
-import { Sparkles, Scan, Dumbbell } from 'lucide-react';
+import { Sparkles, Scan, Dumbbell, AlertTriangle, RefreshCw } from 'lucide-react';
 
 interface PoseBadgeProps {
   detectedPose: PoseType | null;
   rawPose: PoseType | null;
   isModelReady: boolean;
+  statusMessage?: string;
+  initError?: string | null;
+  onRetry?: () => void;
 }
 
 export const PoseBadge: React.FC<PoseBadgeProps> = ({
   detectedPose,
   rawPose,
   isModelReady,
+  statusMessage,
+  initError,
+  onRetry,
 }) => {
+  if (initError) {
+    return (
+      <div className="inline-flex items-center gap-2 px-3.5 py-2 rounded-full bg-red-950/80 border border-red-500/50 text-red-200 text-xs font-semibold shadow-lg shadow-black/60">
+        <AlertTriangle className="w-4 h-4 text-red-400" />
+        <span>AI Vision Issue</span>
+        {onRetry && (
+          <button
+            onClick={onRetry}
+            className="ml-1 px-2 py-0.5 rounded-full bg-red-800 hover:bg-red-700 text-white flex items-center gap-1 transition-colors"
+          >
+            <RefreshCw className="w-3 h-3" /> Retry
+          </button>
+        )}
+      </div>
+    );
+  }
+
   if (!isModelReady) {
     return (
       <div className="inline-flex items-center gap-2.5 px-4 py-2 rounded-full glass-panel border border-amber-500/30 text-amber-200 text-xs sm:text-sm font-semibold tracking-wider uppercase animate-pulse shadow-lg shadow-black/50">
         <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
-        Awakening Divine AI Vision...
+        {statusMessage || 'Awakening Divine AI Vision...'}
       </div>
     );
   }

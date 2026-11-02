@@ -48,6 +48,8 @@ export const App: React.FC = () => {
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [isModelLoading, setIsModelLoading] = useState(false);
   const [isModelReady, setIsModelReady] = useState(false);
+  const [modelStatus, setModelStatus] = useState<string>('Awakening Divine AI Vision...');
+  const [modelError, setModelError] = useState<string | null>(null);
   const [cameraError, setCameraError] = useState<string | null>(null);
 
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
@@ -94,7 +96,7 @@ export const App: React.FC = () => {
   const webglPipelineRef = useRef<WebGLFilterPipeline | null>(null);
   const audioManagerRef = useRef<MajesticAudioManager | null>(null);
   const poseDetectorRef = useRef<PoseDetectorService | null>(null);
-  const debouncerRef = useRef<PoseDebouncer>(new PoseDebouncer(250, 280));
+  const debouncerRef = useRef<PoseDebouncer>(new PoseDebouncer(250, 400));
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordChunksRef = useRef<Blob[]>([]);
   const recordTimerRef = useRef<number | null>(null);
@@ -104,6 +106,29 @@ export const App: React.FC = () => {
   const lastTimeRef = useRef<number>(performance.now());
   const lastPoseRef = useRef<PoseType | null>(null);
   const currentLandmarksRef = useRef<NormalizedLandmark[] | null>(null);
+
+  // Initialize Pose Model with progress tracking
+  const initPoseModel = useCallback(async () => {
+    if (!poseDetectorRef.current) {
+      poseDetectorRef.current = new PoseDetectorService();
+    }
+    setIsModelLoading(true);
+    setModelError(null);
+    setModelStatus('Awakening Divine AI Vision...');
+
+    try {
+      await poseDetectorRef.current.init();
+      setIsModelReady(true);
+      setIsModelLoading(false);
+      setModelStatus('AI Vision Active');
+    } catch (err: unknown) {
+      console.error('Pose detector init failure:', err);
+      const msg = err instanceof Error ? err.message : String(err);
+      setModelError(msg);
+      setModelStatus(`AI Vision Error: ${msg}`);
+      setIsModelLoading(false);
+    }
+  }, []);
 
   // Enumerate cameras on mount
   useEffect(() => {
@@ -116,22 +141,14 @@ export const App: React.FC = () => {
   useEffect(() => {
     audioManagerRef.current = new MajesticAudioManager();
     poseDetectorRef.current = new PoseDetectorService();
-
-    setIsModelLoading(true);
-    poseDetectorRef.current.init().then(() => {
-      setIsModelReady(true);
-      setIsModelLoading(false);
-    }).catch((err) => {
-      console.error('Pose detector init failure:', err);
-      setIsModelLoading(false);
-    });
+    initPoseModel();
 
     return () => {
       if (poseDetectorRef.current) {
         poseDetectorRef.current.close();
       }
     };
-  }, []);
+  }, [initPoseModel]);
 
   // Sync settings with WebGL and Audio
   useEffect(() => {
@@ -558,6 +575,9 @@ export const App: React.FC = () => {
               detectedPose={detectedPose}
               rawPose={rawPose}
               isModelReady={isModelReady}
+              statusMessage={modelStatus}
+              initError={modelError}
+              onRetry={initPoseModel}
             />
           </div>
 
