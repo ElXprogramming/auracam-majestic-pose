@@ -1,12 +1,52 @@
-import { FilesetResolver, PoseLandmarker, PoseLandmarkerResult } from '@mediapipe/tasks-vision';
+import {
+  FilesetResolver,
+  PoseLandmarker,
+  PoseLandmarkerResult,
+  GestureRecognizer,
+  GestureRecognizerResult,
+} from '@mediapipe/tasks-vision';
 import { NormalizedLandmark } from './poseClassifier';
 import { isIOS } from './deviceUtils';
+
+/**
+ * Geometric check for Peace Sign (V-sign ✌️) from 21 hand landmarks:
+ * Index (8) and Middle (12) are extended; Ring (16) and Pinky (20) are curled.
+ */
+export function isHandPeaceSign(lm: NormalizedLandmark[]): boolean {
+  if (!lm || lm.length < 21) return false;
+
+  const wrist = lm[0];
+  const dist = (p1: NormalizedLandmark, p2: NormalizedLandmark) => {
+    const dx = p1.x - p2.x;
+    const dy = p1.y - p2.y;
+    return Math.sqrt(dx * dx + dy * dy);
+  };
+
+  // 1. Index finger extended: tip (8) is further from wrist (0) than PIP (6)
+  const indexExtended = dist(wrist, lm[8]) > dist(wrist, lm[6]) * 1.15;
+
+  // 2. Middle finger extended: tip (12) is further from wrist (0) than PIP (10)
+  const middleExtended = dist(wrist, lm[12]) > dist(wrist, lm[10]) * 1.15;
+
+  // 3. Ring finger curled: tip (16) is closer to wrist than PIP (14)
+  const ringCurled = dist(wrist, lm[16]) < dist(wrist, lm[14]) * 1.15;
+
+  // 4. Pinky finger curled: tip (20) is closer to wrist than PIP (18)
+  const pinkyCurled = dist(wrist, lm[20]) < dist(wrist, lm[18]) * 1.15;
+
+  // 5. Index & Middle tips separated (V-shape)
+  const vSeparation = dist(lm[8], lm[12]) > dist(lm[5], lm[9]) * 0.75;
+
+  return indexExtended && middleExtended && ringCurled && pinkyCurled && vSeparation;
+}
 
 export class PoseDetectorService {
   private static instance: PoseDetectorService | null = null;
   private poseLandmarker: PoseLandmarker | null = null;
+  private gestureRecognizer: GestureRecognizer | null = null;
   private initPromise: Promise<void> | null = null;
   private lastDetectTimeMs: number = 0;
+  private lastGestureTimeMs: number = 0;
   private cachedLandmarks: NormalizedLandmark[] | null = null;
   public statusMessage: string = 'AI Vision initializing...';
   public initError: string | null = null;
@@ -116,8 +156,43 @@ export class PoseDetectorService {
       }
 
       this.poseLandmarker = landmarker;
+
+      // Initialize GestureRecognizer for hands-free Peace Sign (Victory ✌️) activation/termination
+      const gestureModelPaths = [
+        '/models/gesture_recognizer.task',
+        `${window.location.origin}/models/gesture_recognizer.task`,
+        'https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task',
+      ];
+
+      for (const gPath of gestureModelPaths) {
+        for (const delegate of preferredDelegates) {
+          try {
+            console.log(`[PoseDetector] Trying gesture recognizer from: ${gPath} (${delegate} delegate)`);
+            const recognizer = await GestureRecognizer.createFromOptions(vision, {
+              baseOptions: {
+                modelAssetPath: gPath,
+                delegate: delegate,
+              },
+              runningMode: 'VIDEO',
+              numHands: 2,
+              minHandDetectionConfidence: 0.45,
+              minHandPresenceConfidence: 0.45,
+              minTrackingConfidence: 0.45,
+            });
+            if (recognizer) {
+              this.gestureRecognizer = recognizer;
+              console.log(`[PoseDetector] GestureRecognizer loaded successfully with ${delegate} delegate.`);
+              break;
+            }
+          } catch (gErr) {
+            console.warn(`[PoseDetector] GestureRecognizer init failed for ${gPath} (${delegate}):`, gErr);
+          }
+        }
+        if (this.gestureRecognizer) break;
+      }
+
       this.statusMessage = 'AI Vision Active';
-      console.log('✨ [PoseDetector] PoseLandmarker is ready and active!');
+      console.log('✨ [PoseDetector] PoseLandmarker and GestureRecognizer are ready and active!');
     } catch (err: unknown) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       console.error('[PoseDetector] Init failure:', errorMsg);
@@ -164,6 +239,66 @@ export class PoseDetectorService {
     return this.cachedLandmarks;
   }
 
+  /**
+   * Detect gestures (specifically Peace Sign ✌️) throttled to ~120ms
+   */
+  public detectGesture(
+    video: HTMLVideoElement,
+    timestampMs: number
+  ): { isPeaceSign: boolean; confidence: number } {
+    if (
+      !this.gestureRecognizer ||
+      video.readyState < 2 ||
+      video.videoWidth === 0 ||
+      video.videoHeight === 0 ||
+      video.paused
+    ) {
+      return { isPeaceSign: false, confidence: 0 };
+    }
+
+    // Adaptive throttle: check gesture every 120ms (mobile) or 90ms (desktop)
+    const throttleMs = isIOS() ? 120 : 90;
+    if (timestampMs - this.lastGestureTimeMs >= throttleMs) {
+      const safeTimestamp = Math.max(Math.round(timestampMs), this.lastGestureTimeMs + 1);
+      this.lastGestureTimeMs = safeTimestamp;
+
+      try {
+        const result: GestureRecognizerResult = this.gestureRecognizer.recognizeForVideo(video, safeTimestamp);
+
+        if (result.gestures && result.gestures.length > 0) {
+          for (let i = 0; i < result.gestures.length; i++) {
+            const handGestures = result.gestures[i];
+            if (handGestures && handGestures.length > 0) {
+              const top = handGestures[0];
+              const name = top.categoryName;
+              const score = top.score;
+
+              // MediaPipe's trained class for Peace Sign is 'Victory'
+              if (
+                (name === 'Victory' || name.toLowerCase().includes('peace') || name.toLowerCase().includes('victory')) &&
+                score > 0.45
+              ) {
+                return { isPeaceSign: true, confidence: score };
+              }
+
+              // Also verify via hand landmark geometry if available
+              if (result.landmarks && result.landmarks[i]) {
+                const isGeoPeace = isHandPeaceSign(result.landmarks[i] as NormalizedLandmark[]);
+                if (isGeoPeace) {
+                  return { isPeaceSign: true, confidence: 0.85 };
+                }
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[PoseDetector] gesture recognition warning:', err);
+      }
+    }
+
+    return { isPeaceSign: false, confidence: 0 };
+  }
+
   public isReady(): boolean {
     return this.poseLandmarker !== null;
   }
@@ -172,6 +307,10 @@ export class PoseDetectorService {
     if (this.poseLandmarker) {
       this.poseLandmarker.close();
       this.poseLandmarker = null;
+    }
+    if (this.gestureRecognizer) {
+      this.gestureRecognizer.close();
+      this.gestureRecognizer = null;
     }
     this.cachedLandmarks = null;
   }

@@ -84,6 +84,11 @@ export const App: React.FC = () => {
   const [recordedBlob, setRecordedBlob] = useState<Blob | null>(null);
   const [isRecordModalOpen, setIsRecordModalOpen] = useState(false);
 
+  // Gesture & Hands-Free Recording State
+  const [countdown, setCountdown] = useState<number | null>(null);
+  const [gestureNotice, setGestureNotice] = useState<string | null>(null);
+  const [isGestureControlEnabled, setIsGestureControlEnabled] = useState<boolean>(true);
+
   // Drawers & Modals
   const [isControlsOpen, setIsControlsOpen] = useState(false);
   const [isGuideOpen, setIsGuideOpen] = useState(false);
@@ -103,6 +108,16 @@ export const App: React.FC = () => {
   const recordTimerRef = useRef<number | null>(null);
   const capturedTracksRef = useRef<MediaStreamTrack[]>([]);
   const isRecordModalOpenRef = useRef<boolean>(false);
+
+  // Hands-free Gesture & Cooldown Refs
+  const isRecordingRef = useRef<boolean>(false);
+  const isCountingDownRef = useRef<boolean>(false);
+  const lastGestureTriggerTimeRef = useRef<number>(0);
+  const peaceSignHoldCountRef = useRef<number>(0);
+  const countdownTimerRef = useRef<number | null>(null);
+  const isGestureControlEnabledRef = useRef<boolean>(true);
+  const startCountdownAndRecordRef = useRef<() => void>(() => {});
+  const stopRecordingRef = useRef<() => void>(() => {});
 
   // Animation frame loop
   const animFrameIdRef = useRef<number | null>(null);
@@ -160,6 +175,11 @@ export const App: React.FC = () => {
       audioManagerRef.current.setMuted(isMuted);
     }
   }, [audioVolume, isMuted]);
+
+  // Sync isRecording ref for real-time gesture checks
+  useEffect(() => {
+    isRecordingRef.current = isRecording;
+  }, [isRecording]);
 
   // Trigger celebration sparkles
   const triggerMajesticSparkles = useCallback(() => {
@@ -429,10 +449,52 @@ export const App: React.FC = () => {
           }
         }
 
+        // 2. Hands-Free Gesture Detection (Peace sign ✌️ for Record Activation & Termination)
+        if (
+          isGestureControlEnabledRef.current &&
+          poseDetectorRef.current &&
+          !isRecordModalOpenRef.current
+        ) {
+          const { isPeaceSign } = poseDetectorRef.current.detectGesture(video, now);
+
+          if (isPeaceSign) {
+            peaceSignHoldCountRef.current += 1;
+
+            // Must hold gesture for ~200ms (2 consecutive checks) with cooldown of 2500ms
+            if (
+              peaceSignHoldCountRef.current >= 2 &&
+              now - lastGestureTriggerTimeRef.current > 2500
+            ) {
+              lastGestureTriggerTimeRef.current = now;
+              peaceSignHoldCountRef.current = 0;
+
+              if (isRecordingRef.current) {
+                // TERMINATE RECORDING VIA PEACE SIGN ✌️
+                setGestureNotice('✌️ Peace Sign: Clip Finished!');
+                setTimeout(() => setGestureNotice(null), 2500);
+                if (audioManagerRef.current) {
+                  audioManagerRef.current.playCueChime('record_stop');
+                }
+                stopRecordingRef.current();
+              } else if (!isCountingDownRef.current) {
+                // ACTIVATE RECORDING VIA PEACE SIGN ✌️
+                setGestureNotice('✌️ Peace Sign: Starting in 3s!');
+                setTimeout(() => setGestureNotice(null), 3000);
+                if (audioManagerRef.current) {
+                  audioManagerRef.current.playCueChime('gesture_detected');
+                }
+                startCountdownAndRecordRef.current();
+              }
+            }
+          } else {
+            peaceSignHoldCountRef.current = 0;
+          }
+        }
+
         // Filter active condition
         const isMajesticActive = Boolean(detectedPose || forceFilter);
 
-        // 2. Render WebGL Majestic Shader
+        // 3. Render WebGL Majestic Shader
         webglPipelineRef.current.render(video, now / 1000, deltaSec, isMajesticActive);
 
         // 3. Render Neon Skeleton Wireframe (if enabled)
@@ -593,8 +655,9 @@ export const App: React.FC = () => {
         recorder.start(250);
       }
 
-      mediaRecorderRef.current = recorder;
+        mediaRecorderRef.current = recorder;
       setIsRecording(true);
+      isRecordingRef.current = true;
       setRecordSeconds(0);
 
       recordTimerRef.current = window.setInterval(() => {
@@ -613,11 +676,58 @@ export const App: React.FC = () => {
     }
   };
 
-  const stopRecording = () => {
+  const stopRecording = useCallback(() => {
+    isRecordingRef.current = false;
+    setIsRecording(false);
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop();
     }
-  };
+  }, []);
+
+  const cancelCountdown = useCallback(() => {
+    if (countdownTimerRef.current) {
+      clearInterval(countdownTimerRef.current);
+      countdownTimerRef.current = null;
+    }
+    setCountdown(null);
+    isCountingDownRef.current = false;
+  }, []);
+
+  const startCountdownAndRecord = useCallback(() => {
+    if (isCountingDownRef.current || isRecordingRef.current) return;
+    isCountingDownRef.current = true;
+    setCountdown(3);
+    if (audioManagerRef.current) {
+      audioManagerRef.current.playCueChime('countdown_beep');
+    }
+
+    let remaining = 3;
+    if (countdownTimerRef.current) clearInterval(countdownTimerRef.current);
+    countdownTimerRef.current = window.setInterval(() => {
+      remaining -= 1;
+      if (remaining > 0) {
+        setCountdown(remaining);
+        if (audioManagerRef.current) {
+          audioManagerRef.current.playCueChime('countdown_beep');
+        }
+      } else {
+        if (countdownTimerRef.current) {
+          clearInterval(countdownTimerRef.current);
+          countdownTimerRef.current = null;
+        }
+        setCountdown(null);
+        isCountingDownRef.current = false;
+        if (audioManagerRef.current) {
+          audioManagerRef.current.playCueChime('record_start');
+        }
+        startRecording();
+      }
+    }, 1000);
+  }, []);
+
+  // Update live function refs so renderFrame loop always calls latest versions without stale closures
+  startCountdownAndRecordRef.current = startCountdownAndRecord;
+  stopRecordingRef.current = stopRecording;
 
   // Safely restore camera stream & state when closing record preview modal (e.g., retake or exit)
   const handleCloseRecordModal = useCallback(async () => {
@@ -658,6 +768,17 @@ export const App: React.FC = () => {
       audioManagerRef.current.resumeIfSuspended();
     }
   }, [facingMode, selectedDeviceId, aspectRatioMode, recordedVideoUrl]);
+
+  const handleToggleGestureControl = useCallback(() => {
+    setIsGestureControlEnabled((prev) => {
+      const next = !prev;
+      isGestureControlEnabledRef.current = next;
+      if (!next && isCountingDownRef.current) {
+        cancelCountdown();
+      }
+      return next;
+    });
+  }, [cancelCountdown]);
 
   return (
     <div className="fixed inset-0 w-full h-[100dvh] overflow-hidden bg-[#09090b] flex flex-col items-center justify-center">
@@ -782,6 +903,43 @@ export const App: React.FC = () => {
             </div>
           )}
 
+          {/* Floating Gesture Notification Toast */}
+          {gestureNotice && (
+            <div className="absolute top-[max(9.5rem,calc(env(safe-area-inset-top)+7.5rem))] z-40 px-4 py-2 rounded-full glass-panel border border-amber-400/80 bg-black/80 text-amber-300 text-xs sm:text-sm font-black tracking-wide shadow-xl shadow-amber-500/40 flex items-center gap-2 animate-bounce">
+              <span>{gestureNotice}</span>
+            </div>
+          )}
+
+          {/* Fullscreen Hands-Free Countdown Overlay */}
+          {countdown !== null && (
+            <div
+              onClick={cancelCountdown}
+              className="absolute inset-0 z-40 flex flex-col items-center justify-center bg-black/60 backdrop-blur-sm pointer-events-auto cursor-pointer animate-fadeIn"
+            >
+              <div className="relative flex flex-col items-center animate-scaleUp">
+                <span className="font-cinzel text-8xl sm:text-9xl font-black text-amber-400 drop-shadow-[0_0_50px_rgba(255,215,0,0.9)] animate-pulse">
+                  {countdown}
+                </span>
+                <p className="font-cinzel text-base sm:text-xl font-extrabold tracking-widest uppercase text-amber-200 mt-4 drop-shadow-md">
+                  Get In Position • Strike Your Pose! ✌️
+                </p>
+                <span className="text-[11px] text-white/60 mt-2 px-3 py-1 rounded-full bg-white/10">
+                  Tap anywhere to cancel
+                </span>
+              </div>
+            </div>
+          )}
+
+          {/* Hands-Free Peace Sign Hint Badge */}
+          {isGestureControlEnabled && !countdown && (
+            <div className="absolute bottom-[max(9.5rem,calc(env(safe-area-inset-bottom)+8.5rem))] z-30 flex items-center gap-1.5 px-3 py-1 rounded-full bg-black/70 backdrop-blur-md border border-amber-400/35 text-[11px] text-amber-200 shadow-lg shadow-black/50">
+              <span className="text-xs">✌️</span>
+              <span className="font-semibold tracking-wide">
+                {isRecording ? 'Flash ✌️ to Stop' : 'Flash ✌️ to Record'}
+              </span>
+            </div>
+          )}
+
           {/* Floating On-Screen Quick Lens & FOV Selector */}
           <div className="absolute bottom-[max(6.5rem,calc(env(safe-area-inset-bottom)+5.5rem))] z-30 flex items-center gap-1.5 p-1 rounded-full glass-panel border border-white/15 shadow-xl shadow-black/50">
             <button
@@ -838,6 +996,15 @@ export const App: React.FC = () => {
                   title="Stop Recording"
                 >
                   <Square className="w-8 h-8 fill-current" />
+                </button>
+              ) : countdown !== null ? (
+                <button
+                  onClick={cancelCountdown}
+                  className="w-20 h-20 rounded-full border-4 border-amber-400 bg-amber-500/30 hover:bg-amber-500/50 flex flex-col items-center justify-center text-amber-300 shadow-[0_0_30px_rgba(245,158,11,0.5)] active:scale-95 transition-all animate-pulse"
+                  title="Cancel Countdown"
+                >
+                  <span className="font-cinzel text-xl font-black">{countdown}</span>
+                  <span className="text-[9px] uppercase tracking-wider font-semibold">Cancel</span>
                 </button>
               ) : (
                 <button
@@ -970,6 +1137,8 @@ export const App: React.FC = () => {
         aspectRatioMode={aspectRatioMode}
         onAspectRatioChange={handleAspectRatioChange}
         cameraResolution={cameraResolution}
+        isGestureControlEnabled={isGestureControlEnabled}
+        onToggleGestureControl={handleToggleGestureControl}
       />
 
       {/* Pose Guide Modal */}

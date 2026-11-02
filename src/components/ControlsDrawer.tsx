@@ -50,6 +50,8 @@ interface ControlsDrawerProps {
   aspectRatioMode: AspectRatioMode;
   onAspectRatioChange: (mode: AspectRatioMode) => void;
   cameraResolution: { width: number; height: number };
+  isGestureControlEnabled?: boolean;
+  onToggleGestureControl?: () => void;
 }
 
 export const ControlsDrawer: React.FC<ControlsDrawerProps> = ({
@@ -82,6 +84,8 @@ export const ControlsDrawer: React.FC<ControlsDrawerProps> = ({
   aspectRatioMode,
   onAspectRatioChange,
   cameraResolution,
+  isGestureControlEnabled = true,
+  onToggleGestureControl,
 }) => {
   if (!isOpen) return null;
 
@@ -355,6 +359,24 @@ export const ControlsDrawer: React.FC<ControlsDrawerProps> = ({
                   Flip Front / Rear Camera
                 </span>
                 <span className="text-[10px] font-bold uppercase">FLIP</span>
+              </button>
+            )}
+
+            {/* Hands-Free Gesture Toggle */}
+            {onToggleGestureControl && (
+              <button
+                onClick={onToggleGestureControl}
+                className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl border text-xs font-medium transition-all ${
+                  isGestureControlEnabled 
+                    ? 'bg-amber-500/20 border-amber-400/50 text-amber-200 shadow-sm shadow-amber-500/20' 
+                    : 'bg-white/[0.04] border-white/10 text-white/70 hover:bg-white/[0.08]'
+                }`}
+              >
+                <span className="flex items-center gap-2">
+                  <span className="text-sm">✌️</span>
+                  Peace Sign Record & Stop (Hands-Free)
+                </span>
+                <span className="text-[10px] font-bold uppercase">{isGestureControlEnabled ? 'ON' : 'OFF'}</span>
               </button>
             )}
 
