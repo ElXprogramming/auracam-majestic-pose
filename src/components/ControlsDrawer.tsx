@@ -10,7 +10,11 @@ import {
   Eye, 
   EyeOff, 
   HelpCircle,
-  Activity
+  Activity,
+  Maximize2,
+  Minimize2,
+  ZoomIn,
+  RotateCcw
 } from 'lucide-react';
 
 interface ControlsDrawerProps {
@@ -33,6 +37,10 @@ interface ControlsDrawerProps {
   onOpenGuide: () => void;
   forceFilter: boolean;
   onToggleForceFilter: () => void;
+  fitMode: 'contain' | 'cover';
+  onFitModeToggle: () => void;
+  cameraZoom: number;
+  onCameraZoomChange: (v: number) => void;
 }
 
 export const ControlsDrawer: React.FC<ControlsDrawerProps> = ({
@@ -55,6 +63,10 @@ export const ControlsDrawer: React.FC<ControlsDrawerProps> = ({
   onOpenGuide,
   forceFilter,
   onToggleForceFilter,
+  fitMode,
+  onFitModeToggle,
+  cameraZoom,
+  onCameraZoomChange,
 }) => {
   if (!isOpen) return null;
 
@@ -67,7 +79,7 @@ export const ControlsDrawer: React.FC<ControlsDrawerProps> = ({
             <div className="flex items-center gap-2">
               <Sliders className="w-5 h-5 text-amber-400" />
               <h3 className="font-cinzel text-lg font-bold tracking-wide text-white">
-                Filter Controls
+                Camera & Filter Controls
               </h3>
             </div>
             <button
@@ -80,6 +92,44 @@ export const ControlsDrawer: React.FC<ControlsDrawerProps> = ({
 
           {/* Sliders */}
           <div className="space-y-5">
+            {/* Camera Zoom / Field of View */}
+            <div className="space-y-2 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30">
+              <div className="flex items-center justify-between text-xs">
+                <span className="flex items-center gap-1.5 text-amber-300 font-bold">
+                  <ZoomIn className="w-3.5 h-3.5 text-amber-400" />
+                  Camera Zoom / FOV Scale
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-amber-300 font-mono font-bold">
+                    {cameraZoom.toFixed(2)}x
+                  </span>
+                  {cameraZoom !== 1.0 && (
+                    <button
+                      onClick={() => onCameraZoomChange(1.0)}
+                      className="p-1 hover:bg-white/10 rounded text-white/60 hover:text-white transition-colors"
+                      title="Reset Zoom to 1.0x"
+                    >
+                      <RotateCcw className="w-3 h-3" />
+                    </button>
+                  )}
+                </div>
+              </div>
+              <input
+                type="range"
+                min="0.65"
+                max="1.25"
+                step="0.05"
+                value={cameraZoom}
+                onChange={(e) => onCameraZoomChange(parseFloat(e.target.value))}
+                className="w-full accent-amber-500"
+              />
+              <div className="flex justify-between text-[10px] text-white/50">
+                <span>0.65x (Ultra Wide)</span>
+                <span>1.0x (Natural)</span>
+                <span>1.25x (Tight)</span>
+              </div>
+            </div>
+
             {/* Bloom Intensity */}
             <div className="space-y-2">
               <div className="flex items-center justify-between text-xs">
@@ -169,8 +219,24 @@ export const ControlsDrawer: React.FC<ControlsDrawerProps> = ({
           {/* Quick Action Toggles */}
           <div className="pt-2 border-t border-white/10 space-y-2.5">
             <span className="text-[11px] uppercase tracking-wider text-white/50 font-bold block mb-1">
-              Visual & Camera Toggles
+              Framing & Display Mode
             </span>
+
+            {/* Framing Mode Toggle */}
+            <button
+              onClick={onFitModeToggle}
+              className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl border text-xs font-medium transition-all ${
+                fitMode === 'contain' 
+                  ? 'bg-amber-500/20 border-amber-400/50 text-amber-200 shadow-sm shadow-amber-500/20' 
+                  : 'bg-white/[0.04] border-white/10 text-white/70 hover:bg-white/[0.08]'
+              }`}
+            >
+              <span className="flex items-center gap-2">
+                {fitMode === 'contain' ? <Minimize2 className="w-4 h-4 text-amber-400" /> : <Maximize2 className="w-4 h-4" />}
+                {fitMode === 'contain' ? 'Wide Angle / Fit (No Crop)' : 'Fill Screen (Cover)'}
+              </span>
+              <span className="text-[10px] font-bold uppercase">{fitMode === 'contain' ? 'FIT' : 'FILL'}</span>
+            </button>
 
             {/* Skeleton Toggle */}
             <button

@@ -19,6 +19,7 @@ const FRAGMENT_SHADER_SOURCE = `
   uniform float u_bloomStrength;   // 0.2 to 2.5
   uniform vec2 u_resolution;
   uniform bool u_mirror;
+  uniform float u_cameraZoom;      // 0.65 to 1.3
 
   // Multi-tap Poisson/Gaussian kernel offsets
   const int TAPS = 16;
@@ -29,18 +30,24 @@ const FRAGMENT_SHADER_SOURCE = `
       coord.x = 1.0 - coord.x;
     }
 
-    // Subtle slow-motion zoom-in pulse while pose is held
+    // Camera zoom scale + subtle slow-motion pulse while pose is held
     float pulse = sin(u_time * 2.2) * 0.015;
-    float zoom = 1.0 + (0.025 + pulse) * u_filterIntensity;
+    float zoom = u_cameraZoom + (0.02 * pulse) * u_filterIntensity;
     vec2 centeredUv = (coord - 0.5) / zoom + 0.5;
 
     // Fast path: if filter is completely off, render crisp original
     if (u_filterIntensity <= 0.001) {
-      gl_FragColor = texture2D(u_texture, centeredUv);
+      if (centeredUv.x < 0.0 || centeredUv.x > 1.0 || centeredUv.y < 0.0 || centeredUv.y > 1.0) {
+        gl_FragColor = vec4(0.04, 0.04, 0.06, 1.0);
+      } else {
+        gl_FragColor = texture2D(u_texture, centeredUv);
+      }
       return;
     }
 
-    vec2 distVec = centeredUv - 0.5;
+    bool isOutOfBounds = centeredUv.x < 0.0 || centeredUv.x > 1.0 || centeredUv.y < 0.0 || centeredUv.y > 1.0;
+    vec2 validUv = clamp(centeredUv, 0.0, 1.0);
+    vec2 distVec = validUv - 0.5;
     float dist = length(distVec);
 
     // 1. Subtle Chromatic Aberration (RGB shift)
@@ -113,8 +120,13 @@ const FRAGMENT_SHADER_SOURCE = `
     combined += vec3(shimmer * u_filterIntensity);
 
     // Final smooth blend between clean feed and majestic grade
-    vec3 finalOut = mix(texture2D(u_texture, centeredUv).rgb, combined, u_filterIntensity);
-    gl_FragColor = vec4(clamp(finalOut, 0.0, 1.0), 1.0);
+    vec3 original = texture2D(u_texture, validUv).rgb;
+    vec3 finalOut = mix(original, combined, u_filterIntensity);
+    if (isOutOfBounds) {
+      gl_FragColor = vec4(0.04, 0.04, 0.06, 1.0);
+    } else {
+      gl_FragColor = vec4(clamp(finalOut, 0.0, 1.0), 1.0);
+    }
   }
 `;
 
@@ -130,11 +142,13 @@ export class WebGLFilterPipeline {
   private uBloomStrengthLoc: WebGLUniformLocation | null = null;
   private uResolutionLoc: WebGLUniformLocation | null = null;
   private uMirrorLoc: WebGLUniformLocation | null = null;
+  private uCameraZoomLoc: WebGLUniformLocation | null = null;
 
   public currentFilterIntensity: number = 0.0;
   public targetFilterIntensity: number = 0.0;
   public bloomStrength: number = 1.0;
   public isMirrored: boolean = true;
+  public cameraZoom: number = 1.0;
 
   constructor(private canvas: HTMLCanvasElement) {
     this.initGL();
@@ -178,6 +192,7 @@ export class WebGLFilterPipeline {
     this.uBloomStrengthLoc = gl.getUniformLocation(program, 'u_bloomStrength');
     this.uResolutionLoc = gl.getUniformLocation(program, 'u_resolution');
     this.uMirrorLoc = gl.getUniformLocation(program, 'u_mirror');
+    this.uCameraZoomLoc = gl.getUniformLocation(program, 'u_cameraZoom');
 
     // Quad geometry: clip coordinates (-1 to 1) and texture coordinates (0 to 1)
     const positions = new Float32Array([
@@ -261,6 +276,7 @@ export class WebGLFilterPipeline {
     if (this.uBloomStrengthLoc) gl.uniform1f(this.uBloomStrengthLoc, this.bloomStrength);
     if (this.uResolutionLoc) gl.uniform2f(this.uResolutionLoc, this.canvas.width, this.canvas.height);
     if (this.uMirrorLoc) gl.uniform1i(this.uMirrorLoc, this.isMirrored ? 1 : 0);
+    if (this.uCameraZoomLoc) gl.uniform1f(this.uCameraZoomLoc, this.cameraZoom);
 
     // Bind vertex buffers
     const posLoc = gl.getAttribLocation(this.program, 'a_position');

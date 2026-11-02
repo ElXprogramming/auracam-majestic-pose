@@ -13,7 +13,9 @@ import {
   FlipHorizontal,
   Eye,
   EyeOff,
-  Flame
+  Flame,
+  Maximize2,
+  Minimize2
 } from 'lucide-react';
 
 import { WebGLFilterPipeline } from './utils/webglRenderer';
@@ -42,6 +44,8 @@ export const App: React.FC = () => {
   const [hasMultipleCameras, setHasMultipleCameras] = useState(false);
   const [isMirrored, setIsMirrored] = useState(true);
   const [showSkeleton, setShowSkeleton] = useState(true);
+  const [fitMode, setFitMode] = useState<'contain' | 'cover'>('contain'); // Default to 'contain' for wide-angle full view without cropping!
+  const [cameraZoom, setCameraZoom] = useState<number>(1.0);
 
   // Filter & Audio Settings
   const [bloomIntensity, setBloomIntensity] = useState(1.0);
@@ -121,8 +125,9 @@ export const App: React.FC = () => {
     if (webglPipelineRef.current) {
       webglPipelineRef.current.bloomStrength = bloomIntensity;
       webglPipelineRef.current.isMirrored = isMirrored;
+      webglPipelineRef.current.cameraZoom = cameraZoom;
     }
-  }, [bloomIntensity, isMirrored]);
+  }, [bloomIntensity, isMirrored, cameraZoom]);
 
   useEffect(() => {
     if (audioManagerRef.current) {
@@ -156,17 +161,32 @@ export const App: React.FC = () => {
     }
 
     try {
-      const isMobile = window.innerWidth < 768;
+      // Avoid forcing a narrow portrait ratio which triggers hardware crop on 4:3 phone sensors
       const constraints: MediaStreamConstraints = {
         audio: false,
         video: {
           facingMode: facingMode,
-          width: { ideal: isMobile ? 1080 : 1920 },
-          height: { ideal: isMobile ? 1920 : 1080 },
+          width: { ideal: 1920, min: 640 },
+          height: { ideal: 1080, min: 480 },
         },
       };
 
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      const track = stream.getVideoTracks()[0];
+      if (track) {
+        const capabilities = (track as unknown as { getCapabilities?: () => { zoom?: { min: number } } }).getCapabilities?.();
+        if (capabilities && capabilities.zoom && 'min' in capabilities.zoom) {
+          try {
+            await (track as unknown as { applyConstraints: (c: unknown) => Promise<void> }).applyConstraints({
+              advanced: [{ zoom: capabilities.zoom.min || 1.0 }]
+            });
+            console.log('Applied wide-angle min zoom:', capabilities.zoom.min);
+          } catch (e) {
+            console.warn('Could not apply min zoom:', e);
+          }
+        }
+      }
+
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
@@ -205,9 +225,28 @@ export const App: React.FC = () => {
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: nextMode },
+        video: { 
+          facingMode: nextMode,
+          width: { ideal: 1920, min: 640 },
+          height: { ideal: 1080, min: 480 },
+        },
         audio: false,
       });
+
+      const track = stream.getVideoTracks()[0];
+      if (track) {
+        const capabilities = (track as unknown as { getCapabilities?: () => { zoom?: { min: number } } }).getCapabilities?.();
+        if (capabilities && capabilities.zoom && 'min' in capabilities.zoom) {
+          try {
+            await (track as unknown as { applyConstraints: (c: unknown) => Promise<void> }).applyConstraints({
+              advanced: [{ zoom: capabilities.zoom.min || 1.0 }]
+            });
+          } catch (e) {
+            console.warn('Could not apply min zoom:', e);
+          }
+        }
+      }
+
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
@@ -247,6 +286,9 @@ export const App: React.FC = () => {
         webglPipelineRef.current = new WebGLFilterPipeline(webglCanvas);
         webglPipelineRef.current.bloomStrength = bloomIntensity;
         webglPipelineRef.current.isMirrored = isMirrored;
+        webglPipelineRef.current.cameraZoom = cameraZoom;
+      } else {
+        webglPipelineRef.current.cameraZoom = cameraZoom;
       }
 
       // 1. Pose Detection via MediaPipe
@@ -427,13 +469,17 @@ export const App: React.FC = () => {
           {/* WebGL Filter Output Canvas */}
           <canvas
             ref={webglCanvasRef}
-            className="w-full h-full object-cover sm:object-contain"
+            className={`w-full h-full transition-all duration-300 ${
+              fitMode === 'contain' ? 'object-contain' : 'object-cover'
+            }`}
           />
 
           {/* Skeleton Overlay Canvas */}
           <canvas
             ref={skeletonCanvasRef}
-            className="absolute inset-0 w-full h-full object-cover sm:object-contain pointer-events-none"
+            className={`absolute inset-0 w-full h-full pointer-events-none transition-all duration-300 ${
+              fitMode === 'contain' ? 'object-contain' : 'object-cover'
+            }`}
           />
 
           {/* Top HUD Header */}
@@ -457,6 +503,17 @@ export const App: React.FC = () => {
 
             {/* Quick Action Top Bar */}
             <div className="flex items-center gap-2 pointer-events-auto">
+              {/* Framing Mode Toggle (Wide Fit vs Full Screen) */}
+              <button
+                onClick={() => setFitMode(fitMode === 'contain' ? 'cover' : 'contain')}
+                className={`p-2.5 rounded-full glass-panel border transition-colors shadow-md ${
+                  fitMode === 'contain' ? 'text-amber-400 border-amber-400/40 bg-amber-500/10' : 'text-white/60 border-white/10 hover:text-white'
+                }`}
+                title={fitMode === 'contain' ? 'Wide Angle (Fit View) - Tap for Full Screen' : 'Full Screen - Tap for Wide Angle (Fit View)'}
+              >
+                {fitMode === 'contain' ? <Minimize2 className="w-4 h-4 text-amber-400" /> : <Maximize2 className="w-4 h-4" />}
+              </button>
+
               <button
                 onClick={() => setIsMuted(!isMuted)}
                 className="p-2.5 rounded-full glass-panel text-white hover:text-amber-400 border border-white/10 transition-colors shadow-md"
@@ -647,6 +704,10 @@ export const App: React.FC = () => {
         onOpenGuide={() => setIsGuideOpen(true)}
         forceFilter={forceFilter}
         onToggleForceFilter={handleToggleForceFilter}
+        fitMode={fitMode}
+        onFitModeToggle={() => setFitMode(fitMode === 'contain' ? 'cover' : 'contain')}
+        cameraZoom={cameraZoom}
+        onCameraZoomChange={setCameraZoom}
       />
 
       {/* Pose Guide Modal */}
