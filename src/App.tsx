@@ -101,6 +101,8 @@ export const App: React.FC = () => {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordChunksRef = useRef<Blob[]>([]);
   const recordTimerRef = useRef<number | null>(null);
+  const capturedTracksRef = useRef<MediaStreamTrack[]>([]);
+  const isRecordModalOpenRef = useRef<boolean>(false);
 
   // Animation frame loop
   const animFrameIdRef = useRef<number | null>(null);
@@ -110,9 +112,7 @@ export const App: React.FC = () => {
 
   // Initialize Pose Model with progress tracking
   const initPoseModel = useCallback(async () => {
-    if (!poseDetectorRef.current) {
-      poseDetectorRef.current = new PoseDetectorService();
-    }
+    poseDetectorRef.current = PoseDetectorService.getInstance();
     setIsModelLoading(true);
     setModelError(null);
     setModelStatus('Awakening Divine AI Vision...');
@@ -141,14 +141,8 @@ export const App: React.FC = () => {
   // Initialize Audio & Pose Services
   useEffect(() => {
     audioManagerRef.current = new MajesticAudioManager();
-    poseDetectorRef.current = new PoseDetectorService();
+    poseDetectorRef.current = PoseDetectorService.getInstance();
     initPoseModel();
-
-    return () => {
-      if (poseDetectorRef.current) {
-        poseDetectorRef.current.close();
-      }
-    };
   }, [initPoseModel]);
 
   // Sync settings with WebGL and Audio
@@ -343,6 +337,11 @@ export const App: React.FC = () => {
   // Main Render & Detection Loop
   const renderFrame = useCallback(() => {
     try {
+      // Idle cleanly while record preview modal is open to prevent iOS WebKit GPU context exhaustion
+      if (isRecordModalOpenRef.current) {
+        return;
+      }
+
       const video = videoRef.current;
       const webglCanvas = webglCanvasRef.current;
       const skeletonCanvas = skeletonCanvasRef.current;
@@ -488,14 +487,16 @@ export const App: React.FC = () => {
 
       const videoStream = captureStreamFn.call(canvas, 30);
       const audioDest = audioManagerRef.current?.getAudioStreamDestination();
-      const combinedTracks: MediaStreamTrack[] = [...videoStream.getVideoTracks()];
+      const videoTracks = videoStream.getVideoTracks();
+      capturedTracksRef.current = videoTracks;
+      const combinedTracks: MediaStreamTrack[] = [...videoTracks];
 
       if (audioDest && audioDest.stream.getAudioTracks().length > 0) {
         combinedTracks.push(audioDest.stream.getAudioTracks()[0]);
       }
 
       const streamWithAudio = new MediaStream(combinedTracks);
-      const streamVideoOnly = new MediaStream([...videoStream.getVideoTracks()]);
+      const streamVideoOnly = new MediaStream([...videoTracks]);
 
       const isApple = isIOS();
       // On iOS Safari, prioritize MP4 containers; on Android/Desktop, WebM
@@ -545,12 +546,25 @@ export const App: React.FC = () => {
       };
 
       recorder.onstop = () => {
+        // Stop captured canvas tracks to free GPU context and iOS MediaStream resources
+        if (capturedTracksRef.current.length > 0) {
+          capturedTracksRef.current.forEach((t) => {
+            try {
+              t.stop();
+            } catch (e) {
+              console.warn('Track stop error:', e);
+            }
+          });
+          capturedTracksRef.current = [];
+        }
+
         const finalType = recorder.mimeType || (isApple ? 'video/mp4' : 'video/webm');
         const blob = new Blob(recordChunksRef.current, { type: finalType });
         const url = URL.createObjectURL(blob);
         setRecordedBlob(blob);
         setRecordedVideoUrl(url);
         setIsRecordModalOpen(true);
+        isRecordModalOpenRef.current = true;
         setIsRecording(false);
         setRecordSeconds(0);
         if (recordTimerRef.current) clearInterval(recordTimerRef.current);
@@ -573,6 +587,14 @@ export const App: React.FC = () => {
       }, 1000);
     } catch (err) {
       console.error('Failed to start recording:', err);
+      if (capturedTracksRef.current.length > 0) {
+        capturedTracksRef.current.forEach((t) => {
+          try {
+            t.stop();
+          } catch {}
+        });
+        capturedTracksRef.current = [];
+      }
     }
   };
 
@@ -581,6 +603,46 @@ export const App: React.FC = () => {
       mediaRecorderRef.current.stop();
     }
   };
+
+  // Safely restore camera stream & state when closing record preview modal (e.g., retake or exit)
+  const handleCloseRecordModal = useCallback(async () => {
+    setIsRecordModalOpen(false);
+    isRecordModalOpenRef.current = false;
+
+    if (recordedVideoUrl) {
+      URL.revokeObjectURL(recordedVideoUrl);
+      setRecordedVideoUrl(null);
+    }
+    setRecordedBlob(null);
+
+    // iOS Safari / WebKit Media Recovery:
+    // When the recorded preview played in RecordModal, iOS Safari pauses or detaches background camera tracks.
+    // Ensure the live camera stream is still running, tracks are live, and video playback is unpaused.
+    const video = videoRef.current;
+    if (!video) return;
+
+    const stream = video.srcObject as MediaStream | null;
+    const tracks = stream ? stream.getVideoTracks() : [];
+    const hasLiveTracks = tracks.length > 0 && tracks.some((t) => t.readyState === 'live');
+
+    if (hasLiveTracks) {
+      if (video.paused) {
+        try {
+          await video.play();
+        } catch (playErr) {
+          console.warn('Failed to unpause live camera video on retake, restarting stream:', playErr);
+          await startCameraWithConfig(facingMode, selectedDeviceId, aspectRatioMode);
+        }
+      }
+    } else {
+      console.log('Camera tracks ended or inactive during modal preview, re-initializing camera...');
+      await startCameraWithConfig(facingMode, selectedDeviceId, aspectRatioMode);
+    }
+
+    if (audioManagerRef.current) {
+      audioManagerRef.current.resumeIfSuspended();
+    }
+  }, [facingMode, selectedDeviceId, aspectRatioMode, recordedVideoUrl]);
 
   return (
     <div className="fixed inset-0 w-full h-[100dvh] overflow-hidden bg-[#09090b] flex flex-col items-center justify-center">
@@ -904,13 +966,7 @@ export const App: React.FC = () => {
       {/* Record Preview Modal */}
       <RecordModal
         isOpen={isRecordModalOpen}
-        onClose={() => {
-          setIsRecordModalOpen(false);
-          if (recordedVideoUrl) {
-            URL.revokeObjectURL(recordedVideoUrl);
-            setRecordedVideoUrl(null);
-          }
-        }}
+        onClose={handleCloseRecordModal}
         videoUrl={recordedVideoUrl}
         videoBlob={recordedBlob}
       />

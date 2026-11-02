@@ -3,28 +3,54 @@ import { NormalizedLandmark } from './poseClassifier';
 import { isIOS } from './deviceUtils';
 
 export class PoseDetectorService {
+  private static instance: PoseDetectorService | null = null;
   private poseLandmarker: PoseLandmarker | null = null;
-  private isInitializing: boolean = false;
+  private initPromise: Promise<void> | null = null;
   private lastDetectTimeMs: number = 0;
   private cachedLandmarks: NormalizedLandmark[] | null = null;
   public statusMessage: string = 'AI Vision initializing...';
   public initError: string | null = null;
 
-  public async init(): Promise<void> {
-    if (this.poseLandmarker || this.isInitializing) return;
-    this.isInitializing = true;
-    this.initError = null;
+  public static getInstance(): PoseDetectorService {
+    if (!PoseDetectorService.instance) {
+      PoseDetectorService.instance = new PoseDetectorService();
+    }
+    return PoseDetectorService.instance;
+  }
 
+  public async init(): Promise<void> {
+    if (this.poseLandmarker) {
+      return;
+    }
+    // If an initialization is already in flight (e.g. StrictMode double-mount or rapid re-renders),
+    // wait for it rather than returning early or creating a competing instance!
+    if (this.initPromise) {
+      await this.initPromise;
+      return;
+    }
+
+    this.initError = null;
+    this.initPromise = this.doInit();
+
+    try {
+      await this.initPromise;
+    } finally {
+      this.initPromise = null;
+    }
+  }
+
+  private async doInit(): Promise<void> {
     try {
       console.log('✨ [PoseDetector] Resolving vision tasks wasm...');
       this.statusMessage = 'Loading WebAssembly vision engine...';
 
-      // Prefer local pre-bundled wasm first (fastest, no CORS issues, works offline on mobile)
+      // Use jsDelivr CDN as primary: standard Google MediaPipe host with guaranteed correct MIME types,
+      // then fall back to local origin and unpkg
       let vision;
       const wasmUrls = [
+        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm',
         `${window.location.origin}/wasm`,
         '/wasm',
-        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm',
         'https://unpkg.com/@mediapipe/tasks-vision@0.10.14/wasm'
       ];
 
@@ -46,9 +72,9 @@ export class PoseDetectorService {
       this.statusMessage = 'Loading neural pose model...';
 
       const modelPaths = [
+        'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
         '/models/pose_landmarker_lite.task',
-        `${window.location.origin}/models/pose_landmarker_lite.task`,
-        'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task'
+        `${window.location.origin}/models/pose_landmarker_lite.task`
       ];
 
       // CRITICAL FOR IOS/IPAD: On iOS Safari, WebGL inside WebAssembly (GPU delegate) frequently
@@ -98,8 +124,6 @@ export class PoseDetectorService {
       this.initError = errorMsg;
       this.statusMessage = `AI Vision Error: ${errorMsg}`;
       throw err;
-    } finally {
-      this.isInitializing = false;
     }
   }
 
