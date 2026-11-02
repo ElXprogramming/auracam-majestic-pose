@@ -274,17 +274,32 @@ export const App: React.FC = () => {
     }
   };
 
-  // iOS Safari Lifecycle: Auto-resume camera video & audio if paused when tab is foregrounded
+  // iOS Safari / iPadOS Lifecycle: Auto-resume camera video & audio if paused or terminated when tab is foregrounded
   useEffect(() => {
     const handleResume = async () => {
       if (document.visibilityState === 'visible' && isCameraActive && videoRef.current) {
-        if (videoRef.current.paused) {
+        const stream = videoRef.current.srcObject as MediaStream | null;
+        const tracks = stream ? stream.getVideoTracks() : [];
+        const hasLiveTracks = tracks.length > 0 && tracks.some((t) => t.readyState === 'live');
+
+        if (hasLiveTracks) {
+          if (videoRef.current.paused) {
+            try {
+              await videoRef.current.play();
+            } catch (e) {
+              console.warn('Auto-resuming camera stream after tab backgrounded:', e);
+            }
+          }
+        } else {
+          // Camera track was terminated by iOS when tab was backgrounded or screen locked
           try {
-            await videoRef.current.play();
+            console.log('Restoring camera stream after tab foregrounded on iOS/iPadOS...');
+            await startCameraWithConfig(facingMode, selectedDeviceId, aspectRatioMode);
           } catch (e) {
-            console.warn('Auto-resuming camera stream after tab backgrounded:', e);
+            console.warn('Failed to restart camera after foregrounding:', e);
           }
         }
+
         if (audioManagerRef.current) {
           audioManagerRef.current.resumeIfSuspended();
         }
@@ -300,7 +315,7 @@ export const App: React.FC = () => {
       document.removeEventListener('pageshow', handleResume);
       window.removeEventListener('focus', handleResume);
     };
-  }, [isCameraActive]);
+  }, [isCameraActive, facingMode, selectedDeviceId, aspectRatioMode]);
 
   const startCamera = () => {
     startCameraWithConfig(facingMode, selectedDeviceId, aspectRatioMode);
