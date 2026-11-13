@@ -1,5 +1,12 @@
 # AuraCam: Majestic Gym Pose Filter ✨💪
 
+[![Live Demo](https://img.shields.io/badge/Live_Demo-gymposecamera.vercel.app-f59e0b?style=flat-square&logo=vercel&logoColor=white)](https://gymposecamera.vercel.app)
+[![Latest Release](https://img.shields.io/github/v/release/ElXprogramming/auracam-majestic-pose?color=blue)](https://github.com/ElXprogramming/auracam-majestic-pose/releases)
+[![CI](https://github.com/ElXprogramming/auracam-majestic-pose/actions/workflows/ci.yml/badge.svg)](https://github.com/ElXprogramming/auracam-majestic-pose/actions/workflows/ci.yml)
+[![GitHub Stars](https://img.shields.io/github/stars/ElXprogramming/auracam-majestic-pose?style=social)](https://github.com/ElXprogramming/auracam-majestic-pose/stargazers)
+
+🌐 **Live Web App**: [https://gymposecamera.vercel.app](https://gymposecamera.vercel.app)
+
 A mobile-first, high-performance real-time camera web application engineered with **Vite + React + Tailwind CSS**, **MediaPipe WebAssembly**, and a custom **WebGL Post-Processing Shader Pipeline**.
 
 Detects iconic bodybuilding and gym poses in real-time and transitions into an angelic, ethereal aesthetic filter synchronized with the viral track **"Great Fairy's Fountain (Magical Version)" by Faiyshaal**.
@@ -55,6 +62,10 @@ Detects iconic bodybuilding and gym poses in real-time and transitions into an a
 ## 🚀 Getting Started
 
 ```bash
+# Clone the repository
+git clone https://github.com/ElXprogramming/auracam-majestic-pose.git
+cd auracam-majestic-pose
+
 # Install dependencies
 npm install
 
@@ -64,6 +75,12 @@ npm run dev
 # Build production assets
 npm run build
 ```
+
+---
+
+## 🤝 Contributing & Security
+
+Contributions and bug reports are welcome! Please review [CONTRIBUTING.md](CONTRIBUTING.md), our [Code of Conduct](CODE_OF_CONDUCT.md), and [SECURITY.md](SECURITY.md).
 
 ---
 
