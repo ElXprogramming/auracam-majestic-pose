@@ -8,13 +8,13 @@ export interface SkeletonOptions {
 }
 
 // Connections between BlazePose joints
-export const POSE_CONNECTIONS: [number, number][] = [
+export const POSE_CONNECTIONS: readonly (readonly [number, number])[] = [
   // Face
   [LM.NOSE, LM.LEFT_EYE],
   [LM.NOSE, LM.RIGHT_EYE],
   [LM.LEFT_EYE, LM.LEFT_EAR],
   [LM.RIGHT_EYE, LM.RIGHT_EAR],
-  
+
   // Torso
   [LM.LEFT_SHOULDER, LM.RIGHT_SHOULDER],
   [LM.LEFT_SHOULDER, LM.LEFT_HIP],
@@ -40,6 +40,17 @@ export const POSE_CONNECTIONS: [number, number][] = [
   [LM.RIGHT_KNEE, LM.RIGHT_ANKLE],
 ];
 
+const KEY_JOINTS = new Set<number>([
+  LM.LEFT_WRIST,
+  LM.RIGHT_WRIST,
+  LM.LEFT_ELBOW,
+  LM.RIGHT_ELBOW,
+  LM.LEFT_SHOULDER,
+  LM.RIGHT_SHOULDER,
+]);
+
+const TWO_PI = Math.PI * 2;
+
 export function renderNeonSkeleton(
   ctx: CanvasRenderingContext2D,
   landmarks: NormalizedLandmark[],
@@ -47,86 +58,95 @@ export function renderNeonSkeleton(
   height: number,
   options: SkeletonOptions
 ) {
+  ctx.clearRect(0, 0, width, height);
   if (!landmarks || landmarks.length === 0) return;
 
   const { isMirrored, isPoseActive } = options;
 
-  ctx.save();
-  ctx.clearRect(0, 0, width, height);
-
-  const primaryColor = isPoseActive ? '#ffd700' : '#38bdf8'; // Gold if majestic, cyan if searching
-  const glowColor = isPoseActive ? 'rgba(255, 215, 0, 0.8)' : 'rgba(56, 189, 248, 0.6)';
+  const primaryColor = isPoseActive ? '#ffd700' : '#38bdf8';
+  const glowColor = isPoseActive ? 'rgba(255, 215, 0, 0.34)' : 'rgba(56, 189, 248, 0.26)';
   const haloColor = isPoseActive ? 'rgba(255, 230, 100, 0.35)' : 'rgba(56, 189, 248, 0.2)';
-
-  // Helper to map normalized coordinates to canvas pixels
-  const getPoint = (lm: NormalizedLandmark) => {
-    let x = lm.x;
-    if (isMirrored) {
-      x = 1.0 - x;
-    }
-    return {
-      x: x * width,
-      y: lm.y * height,
-      visibility: lm.visibility ?? 1.0,
-    };
-  };
 
   // Resolution-aware scale for crisp lines on high-density iPhone/iPad screens
   const scale = Math.max(1, Math.min(width, height) / 500);
+  const coreWidth = (isPoseActive ? 4.0 : 2.8) * scale;
 
-  // Draw Connections
-  ctx.lineWidth = (isPoseActive ? 4.0 : 2.8) * scale;
-  ctx.strokeStyle = primaryColor;
-  ctx.shadowColor = glowColor;
-  ctx.shadowBlur = (isPoseActive ? 18 : 10) * scale;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
 
-  for (const [startIdx, endIdx] of POSE_CONNECTIONS) {
-    const lmStart = landmarks[startIdx];
-    const lmEnd = landmarks[endIdx];
+  // Batch all visible bone segments into a single path (dual-pass glow + core avoids costly per-segment shadowBlur)
+  ctx.beginPath();
+  for (let i = 0; i < POSE_CONNECTIONS.length; i++) {
+    const conn = POSE_CONNECTIONS[i];
+    const lmStart = landmarks[conn[0]];
+    const lmEnd = landmarks[conn[1]];
 
     if (!lmStart || !lmEnd) continue;
     if ((lmStart.visibility ?? 1) < 0.4 || (lmEnd.visibility ?? 1) < 0.4) continue;
 
-    const p1 = getPoint(lmStart);
-    const p2 = getPoint(lmEnd);
+    const x1 = (isMirrored ? 1.0 - lmStart.x : lmStart.x) * width;
+    const y1 = lmStart.y * height;
+    const x2 = (isMirrored ? 1.0 - lmEnd.x : lmEnd.x) * width;
+    const y2 = lmEnd.y * height;
 
-    ctx.beginPath();
-    ctx.moveTo(p1.x, p1.y);
-    ctx.lineTo(p2.x, p2.y);
-    ctx.stroke();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
   }
 
-  // Draw Glowing Joint Nodes
+  // Outer neon glow pass
+  ctx.lineWidth = coreWidth * (isPoseActive ? 3.2 : 2.6);
+  ctx.strokeStyle = glowColor;
+  ctx.stroke();
+
+  // Crisp inner core pass
+  ctx.lineWidth = coreWidth;
+  ctx.strokeStyle = primaryColor;
+  ctx.stroke();
+
+  // Batch outer halos for key joints
+  const haloRadius = (isPoseActive ? 11 : 7.5) * scale;
+  ctx.beginPath();
   for (let i = 0; i < landmarks.length; i++) {
     const lm = landmarks[i];
     if (!lm || (lm.visibility ?? 1) < 0.45) continue;
-    // Highlight key joints (wrists, elbows, shoulders, hips)
-    const isKeyJoint = [
-      LM.LEFT_WRIST, LM.RIGHT_WRIST,
-      LM.LEFT_ELBOW, LM.RIGHT_ELBOW,
-      LM.LEFT_SHOULDER, LM.RIGHT_SHOULDER
-    ].includes(i);
+    if (!KEY_JOINTS.has(i)) continue;
 
-    const pt = getPoint(lm);
-
-    // Outer halo
-    if (isKeyJoint && isPoseActive) {
-      ctx.beginPath();
-      ctx.arc(pt.x, pt.y, 11 * scale, 0, Math.PI * 2);
-      ctx.fillStyle = haloColor;
-      ctx.fill();
-    }
-
-    // Inner node
-    ctx.beginPath();
-    const radius = (isKeyJoint ? (isPoseActive ? 5.5 : 4.5) : 3.5) * scale;
-    ctx.arc(pt.x, pt.y, radius, 0, Math.PI * 2);
-    ctx.fillStyle = isKeyJoint ? '#ffffff' : primaryColor;
-    ctx.shadowBlur = 10 * scale;
-    ctx.fill();
+    const x = (isMirrored ? 1.0 - lm.x : lm.x) * width;
+    const y = lm.y * height;
+    ctx.moveTo(x + haloRadius, y);
+    ctx.arc(x, y, haloRadius, 0, TWO_PI);
   }
+  ctx.fillStyle = haloColor;
+  ctx.fill();
 
-  ctx.restore();
+  // Batch standard joints (primaryColor) and key joints (#ffffff) in two single fill calls
+  const stdRadius = 3.5 * scale;
+  ctx.beginPath();
+  for (let i = 0; i < landmarks.length; i++) {
+    if (KEY_JOINTS.has(i)) continue;
+    const lm = landmarks[i];
+    if (!lm || (lm.visibility ?? 1) < 0.45) continue;
+
+    const x = (isMirrored ? 1.0 - lm.x : lm.x) * width;
+    const y = lm.y * height;
+    ctx.moveTo(x + stdRadius, y);
+    ctx.arc(x, y, stdRadius, 0, TWO_PI);
+  }
+  ctx.fillStyle = primaryColor;
+  ctx.fill();
+
+  const keyRadius = (isPoseActive ? 5.5 : 4.5) * scale;
+  ctx.beginPath();
+  for (let i = 0; i < landmarks.length; i++) {
+    if (!KEY_JOINTS.has(i)) continue;
+    const lm = landmarks[i];
+    if (!lm || (lm.visibility ?? 1) < 0.45) continue;
+
+    const x = (isMirrored ? 1.0 - lm.x : lm.x) * width;
+    const y = lm.y * height;
+    ctx.moveTo(x + keyRadius, y);
+    ctx.arc(x, y, keyRadius, 0, TWO_PI);
+  }
+  ctx.fillStyle = '#ffffff';
+  ctx.fill();
 }

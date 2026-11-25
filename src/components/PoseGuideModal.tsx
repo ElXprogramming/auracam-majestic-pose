@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { memo } from 'react';
 import { X, Award, Flame, Zap, ShieldAlert } from 'lucide-react';
 
 interface PoseGuideModalProps {
@@ -6,39 +6,39 @@ interface PoseGuideModalProps {
   onClose: () => void;
 }
 
-export const PoseGuideModal: React.FC<PoseGuideModalProps> = ({ isOpen, onClose }) => {
-  if (!isOpen) return null;
+const POSES = [
+  {
+    title: 'Front Double Bicep',
+    Icon: Award,
+    difficulty: 'Classic',
+    desc: 'Raise both elbows horizontal with your shoulders. Flex both arms at 90° (70°-110°) with wrists above elbows.',
+    tip: 'Elbows up, flex biceps hard, keep chest proud.',
+  },
+  {
+    title: 'Zyzz / Archer Pose',
+    Icon: Flame,
+    difficulty: 'Legendary',
+    desc: 'Extend one arm straight outward like drawing a bow. Bring the opposite arm flexed behind or near your head.',
+    tip: 'Channel your inner aesthetics god. Hold strong for 250ms.',
+  },
+  {
+    title: 'Lat Spread',
+    Icon: Zap,
+    difficulty: 'Power',
+    desc: 'Place both hands on your hips or waist. Flare your elbows wide out to expand your back silhouette.',
+    tip: 'Elbows wide, hands locked on hips.',
+  },
+  {
+    title: 'Any Flex',
+    Icon: ShieldAlert,
+    difficulty: 'Instant',
+    desc: 'Raise either hand above your shoulder with elbow flexed. Perfect for single arm bicep curls or quick flexes.',
+    tip: 'Fastest way to trigger the ethereal divine filter.',
+  },
+] as const;
 
-  const poses = [
-    {
-      title: "Front Double Bicep",
-      icon: <Award className="w-5 h-5 text-amber-400" />,
-      difficulty: "Classic",
-      desc: "Raise both elbows horizontal with your shoulders. Flex both arms at 90° (70°-110°) with wrists above elbows.",
-      tip: "Elbows up, flex biceps hard, keep chest proud."
-    },
-    {
-      title: "Zyzz / Archer Pose",
-      icon: <Flame className="w-5 h-5 text-amber-400" />,
-      difficulty: "Legendary",
-      desc: "Extend one arm straight outward like drawing a bow. Bring the opposite arm flexed behind or near your head.",
-      tip: "Channel your inner aesthetics god. Hold strong for 250ms."
-    },
-    {
-      title: "Lat Spread",
-      icon: <Zap className="w-5 h-5 text-amber-400" />,
-      difficulty: "Power",
-      desc: "Place both hands on your hips or waist. Flare your elbows wide out to expand your back silhouette.",
-      tip: "Elbows wide, hands locked on hips."
-    },
-    {
-      title: "Any Flex",
-      icon: <ShieldAlert className="w-5 h-5 text-amber-400" />,
-      difficulty: "Instant",
-      desc: "Raise either hand above your shoulder with elbow flexed. Perfect for single arm bicep curls or quick flexes.",
-      tip: "Fastest way to trigger the ethereal divine filter."
-    }
-  ];
+export const PoseGuideModal: React.FC<PoseGuideModalProps> = memo(({ isOpen, onClose }) => {
+  if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fadeIn">
@@ -63,27 +63,27 @@ export const PoseGuideModal: React.FC<PoseGuideModalProps> = ({ isOpen, onClose 
         </p>
 
         <div className="space-y-3.5">
-          {poses.map((p, idx) => (
+          {POSES.map(({ title, Icon, difficulty, desc, tip }) => (
             <div
-              key={idx}
+              key={title}
               className="p-4 rounded-xl bg-white/[0.04] border border-white/[0.08] hover:border-amber-400/40 transition-colors"
             >
               <div className="flex items-center justify-between mb-1.5">
                 <div className="flex items-center gap-2">
-                  {p.icon}
+                  <Icon className="w-5 h-5 text-amber-400" />
                   <span className="font-semibold text-sm sm:text-base text-white">
-                    {p.title}
+                    {title}
                   </span>
                 </div>
                 <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                  {p.difficulty}
+                  {difficulty}
                 </span>
               </div>
               <p className="text-xs sm:text-sm text-white/80 leading-relaxed mb-1.5">
-                {p.desc}
+                {desc}
               </p>
               <p className="text-[11px] text-amber-300/80 font-medium">
-                💡 <span className="italic">{p.tip}</span>
+                💡 <span className="italic">{tip}</span>
               </p>
             </div>
           ))}
@@ -100,4 +100,7 @@ export const PoseGuideModal: React.FC<PoseGuideModalProps> = ({ isOpen, onClose 
       </div>
     </div>
   );
-};
+});
+
+PoseGuideModal.displayName = 'PoseGuideModal';
+export default PoseGuideModal;

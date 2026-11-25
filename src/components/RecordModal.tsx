@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState, memo } from 'react';
 import { X, Download, Share2, Play, RefreshCw, CheckCircle2, Volume2, VolumeX, Info } from 'lucide-react';
 import { isIOS } from '../utils/deviceUtils';
 
@@ -9,18 +9,28 @@ interface RecordModalProps {
   videoBlob: Blob | null;
 }
 
-export const RecordModal: React.FC<RecordModalProps> = ({
+export const RecordModal: React.FC<RecordModalProps> = memo(({
   isOpen,
   onClose,
   videoUrl,
   videoBlob,
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const revokeTimerRef = useRef<number | null>(null);
+  const downloadedTimerRef = useRef<number | null>(null);
   const [downloaded, setDownloaded] = useState(false);
   const [isPreviewMuted, setIsPreviewMuted] = useState(false);
   const isAppleDevice = isIOS();
   // Default to .mov on Apple devices (iPhone/iPad) for native QuickTime / Photos app compatibility
   const [selectedFormat, setSelectedFormat] = useState<'mov' | 'mp4'>(isAppleDevice ? 'mov' : 'mp4');
+
+  // Cleanup pending timers on unmount
+  useEffect(() => {
+    return () => {
+      if (revokeTimerRef.current !== null) window.clearTimeout(revokeTimerRef.current);
+      if (downloadedTimerRef.current !== null) window.clearTimeout(downloadedTimerRef.current);
+    };
+  }, []);
 
   // Safely initiate video playback on iOS Safari
   useEffect(() => {
@@ -68,8 +78,8 @@ export const RecordModal: React.FC<RecordModalProps> = ({
     const ext = selectedFormat;
     const mimeType = ext === 'mov' ? 'video/quicktime' : 'video/mp4';
 
-    // Construct blob with corresponding MIME type
-    const exportBlob = new Blob([videoBlob], { type: mimeType });
+    // Zero-copy Blob slice view with target MIME type
+    const exportBlob = videoBlob.slice(0, videoBlob.size, mimeType);
     const exportUrl = URL.createObjectURL(exportBlob);
 
     const a = document.createElement('a');
@@ -78,10 +88,19 @@ export const RecordModal: React.FC<RecordModalProps> = ({
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(exportUrl), 5000);
+
+    if (revokeTimerRef.current !== null) window.clearTimeout(revokeTimerRef.current);
+    revokeTimerRef.current = window.setTimeout(() => {
+      URL.revokeObjectURL(exportUrl);
+      revokeTimerRef.current = null;
+    }, 5000);
 
     setDownloaded(true);
-    setTimeout(() => setDownloaded(false), 3000);
+    if (downloadedTimerRef.current !== null) window.clearTimeout(downloadedTimerRef.current);
+    downloadedTimerRef.current = window.setTimeout(() => {
+      setDownloaded(false);
+      downloadedTimerRef.current = null;
+    }, 3000);
   };
 
   const handleShare = async () => {
@@ -94,7 +113,6 @@ export const RecordModal: React.FC<RecordModalProps> = ({
         type: mimeType,
       });
 
-      // Check if file sharing is supported by native navigator.canShare
       const canShareFiles = typeof navigator.canShare === 'function' && navigator.canShare({ files: [file] });
 
       if (canShareFiles) {
@@ -104,7 +122,6 @@ export const RecordModal: React.FC<RecordModalProps> = ({
           files: [file],
         });
       } else {
-        // Fallback for browsers that support text share but not file sharing
         await navigator.share({
           title: 'AuraCam: Majestic Gym Pose Filter',
           text: 'Check out my majestic gym pose transformation! ✨💪',
@@ -208,7 +225,6 @@ export const RecordModal: React.FC<RecordModalProps> = ({
 
         {/* Action Buttons */}
         <div className="w-full mt-3 space-y-2.5">
-          {/* Primary Action Button */}
           {isAppleDevice && typeof navigator !== 'undefined' && 'share' in navigator ? (
             <button
               onClick={handleShare}
@@ -282,4 +298,7 @@ export const RecordModal: React.FC<RecordModalProps> = ({
       </div>
     </div>
   );
-};
+});
+
+RecordModal.displayName = 'RecordModal';
+export default RecordModal;

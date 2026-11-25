@@ -5,7 +5,7 @@ export interface NormalizedLandmark {
   visibility?: number;
 }
 
-export type PoseType = 
+export type PoseType =
   | 'Front Double Bicep'
   | 'Zyzz / Archer Pose'
   | 'Lat Spread'
@@ -18,6 +18,9 @@ export interface PoseDetectionResult {
   details?: string;
 }
 
+const RAD_TO_DEG = 180.0 / Math.PI;
+const MIN_VISIBILITY = 0.25;
+
 // Helper: Calculate 2D angle between three points A -> B -> C with vertex at B
 export function calculateAngle(
   a: NormalizedLandmark,
@@ -25,18 +28,27 @@ export function calculateAngle(
   c: NormalizedLandmark
 ): number {
   const radians = Math.atan2(c.y - b.y, c.x - b.x) - Math.atan2(a.y - b.y, a.x - b.x);
-  let angle = Math.abs((radians * 180.0) / Math.PI);
+  let angle = Math.abs(radians * RAD_TO_DEG);
   if (angle > 180.0) {
     angle = 360.0 - angle;
   }
   return angle;
 }
 
-// Distance between two points
-export function distance2D(a: NormalizedLandmark, b: NormalizedLandmark): number {
+// Squared 2D distance (avoids Math.sqrt when comparing thresholds)
+function distance2DSq(a: NormalizedLandmark, b: NormalizedLandmark): number {
   const dx = a.x - b.x;
   const dy = a.y - b.y;
-  return Math.sqrt(dx * dx + dy * dy);
+  return dx * dx + dy * dy;
+}
+
+// Distance between two points
+export function distance2D(a: NormalizedLandmark, b: NormalizedLandmark): number {
+  return Math.sqrt(distance2DSq(a, b));
+}
+
+function isVis(lm?: NormalizedLandmark): boolean {
+  return !lm || (lm.visibility ?? 1.0) > MIN_VISIBILITY;
 }
 
 // Landmark index mappings according to BlazePose
@@ -70,7 +82,9 @@ export const LM = {
   RIGHT_KNEE: 26,
   LEFT_ANKLE: 27,
   RIGHT_ANKLE: 28,
-};
+} as const;
+
+const NO_POSE_RESULT: { pose: PoseType | null; confidence: number } = { pose: null, confidence: 0 };
 
 /**
  * Classify single frame pose geometry
@@ -82,11 +96,18 @@ export function classifyPoseGeometry(
   sensitivity: number = 1.0
 ): { pose: PoseType | null; confidence: number } {
   if (!landmarks || landmarks.length < 25) {
-    return { pose: null, confidence: 0 };
+    return NO_POSE_RESULT;
   }
 
   const lShoulder = landmarks[LM.LEFT_SHOULDER];
   const rShoulder = landmarks[LM.RIGHT_SHOULDER];
+  const shoulderWidthSq = distance2DSq(lShoulder, rShoulder);
+  if (shoulderWidthSq < 0.0016) {
+    // shoulderWidth < 0.04
+    return NO_POSE_RESULT;
+  }
+
+  const shoulderWidth = Math.sqrt(shoulderWidthSq);
   const lElbow = landmarks[LM.LEFT_ELBOW];
   const rElbow = landmarks[LM.RIGHT_ELBOW];
   const lWrist = landmarks[LM.LEFT_WRIST];
@@ -95,14 +116,12 @@ export function classifyPoseGeometry(
   const rHip = landmarks[LM.RIGHT_HIP];
   const nose = landmarks[LM.NOSE];
 
-  // Minimum visibility threshold
-  const minVis = 0.25;
-  const isVis = (lm?: NormalizedLandmark) => !lm || (lm.visibility ?? 1.0) > minVis;
-
-  const shoulderWidth = distance2D(lShoulder, rShoulder);
-  if (shoulderWidth < 0.04) {
-    return { pose: null, confidence: 0 };
-  }
+  const lShoulderVis = isVis(lShoulder);
+  const rShoulderVis = isVis(rShoulder);
+  const lElbowVis = isVis(lElbow);
+  const rElbowVis = isVis(rElbow);
+  const lWristVis = isVis(lWrist);
+  const rWristVis = isVis(rWrist);
 
   // Calculate elbow flexion angles
   const lElbowAngle = calculateAngle(lShoulder, lElbow, lWrist);
@@ -112,15 +131,10 @@ export function classifyPoseGeometry(
   const angleTolerance = 25 * sensitivity;
 
   // 1) Front Double Bicep
-  // - Both elbows elevated near or above chest level
-  // - Both arms flexed (50°-130°)
-  // - Wrists roughly at or above elbows
-  const bothShouldersVis = isVis(lShoulder) && isVis(rShoulder);
-  const bothArmsVis = isVis(lElbow) && isVis(rElbow) && isVis(lWrist) && isVis(rWrist);
-
-  if (bothShouldersVis && bothArmsVis) {
-    const lElbowUp = lElbow.y < lShoulder.y + shoulderWidth * (0.45 * sensitivity);
-    const rElbowUp = rElbow.y < rShoulder.y + shoulderWidth * (0.45 * sensitivity);
+  if (lShoulderVis && rShoulderVis && lElbowVis && rElbowVis && lWristVis && rWristVis) {
+    const elbowMargin = shoulderWidth * (0.45 * sensitivity);
+    const lElbowUp = lElbow.y < lShoulder.y + elbowMargin;
+    const rElbowUp = rElbow.y < rShoulder.y + elbowMargin;
 
     const minBicep = Math.max(45, 65 - angleTolerance);
     const maxBicep = Math.min(135, 115 + angleTolerance);
@@ -137,15 +151,16 @@ export function classifyPoseGeometry(
   }
 
   // 2) Zyzz / Archer Pose
-  // - One arm extended straight out (elbow angle > 135°)
-  // - Opposite arm flexed behind or near head (elbow angle < 125°, wrist near head or elevated)
   const straightThreshold = Math.max(125, 145 - angleTolerance);
   const headFlexThreshold = Math.min(130, 115 + angleTolerance);
+  const reachSqThreshold = shoulderWidthSq * 0.49; // (0.7 * shoulderWidth)^2
 
   // Scenario A: Left arm straight out, Right arm flexed behind head
-  if (isVis(lShoulder) && isVis(lElbow) && isVis(lWrist) && isVis(rElbow) && isVis(rWrist)) {
-    const lStraightOut = lElbowAngle >= straightThreshold && distance2D(lWrist, lShoulder) > shoulderWidth * 0.7;
-    const rFlexedHead = rElbowAngle <= headFlexThreshold && (rWrist.y < rShoulder.y + 0.05 || distance2D(rWrist, nose) < shoulderWidth * 1.0);
+  if (lShoulderVis && lElbowVis && lWristVis && rElbowVis && rWristVis) {
+    const lStraightOut = lElbowAngle >= straightThreshold && distance2DSq(lWrist, lShoulder) > reachSqThreshold;
+    const rFlexedHead =
+      rElbowAngle <= headFlexThreshold &&
+      (rWrist.y < rShoulder.y + 0.05 || distance2DSq(rWrist, nose) < shoulderWidthSq);
 
     if (lStraightOut && rFlexedHead) {
       return { pose: 'Zyzz / Archer Pose', confidence: 0.92 };
@@ -153,9 +168,11 @@ export function classifyPoseGeometry(
   }
 
   // Scenario B: Right arm straight out, Left arm flexed behind head
-  if (isVis(rShoulder) && isVis(rElbow) && isVis(rWrist) && isVis(lElbow) && isVis(lWrist)) {
-    const rStraightOut = rElbowAngle >= straightThreshold && distance2D(rWrist, rShoulder) > shoulderWidth * 0.7;
-    const lFlexedHead = lElbowAngle <= headFlexThreshold && (lWrist.y < lShoulder.y + 0.05 || distance2D(lWrist, nose) < shoulderWidth * 1.0);
+  if (rShoulderVis && rElbowVis && rWristVis && lElbowVis && lWristVis) {
+    const rStraightOut = rElbowAngle >= straightThreshold && distance2DSq(rWrist, rShoulder) > reachSqThreshold;
+    const lFlexedHead =
+      lElbowAngle <= headFlexThreshold &&
+      (lWrist.y < lShoulder.y + 0.05 || distance2DSq(lWrist, nose) < shoulderWidthSq);
 
     if (rStraightOut && lFlexedHead) {
       return { pose: 'Zyzz / Archer Pose', confidence: 0.92 };
@@ -163,14 +180,18 @@ export function classifyPoseGeometry(
   }
 
   // 3) Lat Spread
-  // - Hands/wrists placed on hips or waist level
-  // - Elbows flared wide
-  if (isVis(lElbow) && isVis(rElbow) && isVis(lShoulder) && isVis(rShoulder)) {
-    const lWristNearHip = isVis(lWrist) ? (Math.abs(lWrist.y - lHip.y) < shoulderWidth * (0.7 * sensitivity) || lWrist.y > lShoulder.y + shoulderWidth * 0.3) : true;
-    const rWristNearHip = isVis(rWrist) ? (Math.abs(rWrist.y - rHip.y) < shoulderWidth * (0.7 * sensitivity) || rWrist.y > rShoulder.y + shoulderWidth * 0.3) : true;
+  if (lElbowVis && rElbowVis && lShoulderVis && rShoulderVis) {
+    const hipTol = shoulderWidth * (0.7 * sensitivity);
+    const shoulderDrop = shoulderWidth * 0.3;
+    const lWristNearHip = lWristVis
+      ? Math.abs(lWrist.y - lHip.y) < hipTol || lWrist.y > lShoulder.y + shoulderDrop
+      : true;
+    const rWristNearHip = rWristVis
+      ? Math.abs(rWrist.y - rHip.y) < hipTol || rWrist.y > rShoulder.y + shoulderDrop
+      : true;
 
-    const elbowSpan = distance2D(lElbow, rElbow);
-    const elbowsFlaredWide = elbowSpan > shoulderWidth * (1.35 / sensitivity);
+    const flareRatio = 1.35 / sensitivity;
+    const elbowsFlaredWide = distance2DSq(lElbow, rElbow) > shoulderWidthSq * (flareRatio * flareRatio);
     const lElbowBent = lElbowAngle >= 45 && lElbowAngle <= 145;
     const rElbowBent = rElbowAngle >= 45 && rElbowAngle <= 145;
 
@@ -179,23 +200,31 @@ export function classifyPoseGeometry(
     }
   }
 
-  // 4) Any Flex (Easiest & most intuitive to trigger!)
-  // - At least one arm with wrist elevated near/above shoulder and elbow flexed
-  const leftArmFlex = 
-    isVis(lShoulder) && isVis(lElbow) && isVis(lWrist) &&
-    lWrist.y < (lShoulder.y + shoulderWidth * 0.25) &&
-    lElbowAngle >= 35 && lElbowAngle <= (125 + angleTolerance * 0.5);
+  // 4) Any Flex
+  const maxFlexAngle = 125 + angleTolerance * 0.5;
+  const wristShoulderMargin = shoulderWidth * 0.25;
 
-  const rightArmFlex = 
-    isVis(rShoulder) && isVis(rElbow) && isVis(rWrist) &&
-    rWrist.y < (rShoulder.y + shoulderWidth * 0.25) &&
-    rElbowAngle >= 35 && rElbowAngle <= (125 + angleTolerance * 0.5);
+  const leftArmFlex =
+    lShoulderVis &&
+    lElbowVis &&
+    lWristVis &&
+    lWrist.y < lShoulder.y + wristShoulderMargin &&
+    lElbowAngle >= 35 &&
+    lElbowAngle <= maxFlexAngle;
+
+  const rightArmFlex =
+    rShoulderVis &&
+    rElbowVis &&
+    rWristVis &&
+    rWrist.y < rShoulder.y + wristShoulderMargin &&
+    rElbowAngle >= 35 &&
+    rElbowAngle <= maxFlexAngle;
 
   if (leftArmFlex || rightArmFlex) {
     return { pose: 'Any Flex', confidence: 0.85 };
   }
 
-  return { pose: null, confidence: 0 };
+  return NO_POSE_RESULT;
 }
 
 /**
@@ -206,7 +235,7 @@ export class PoseDebouncer {
   private candidatePose: PoseType | null = null;
   private candidateStartTime: number = 0;
   private missedFrames: number = 0;
-  private maxMissedFrames: number = 6; // Allow up to 6 dropped frames (~120ms) without resetting candidate
+  private maxMissedFrames: number = 6;
   private releaseStartTime: number = 0;
   private debounceMs: number;
   private releaseToleranceMs: number;
@@ -218,16 +247,15 @@ export class PoseDebouncer {
 
   public update(rawPose: PoseType | null, now: number = performance.now()): PoseDetectionResult {
     if (rawPose) {
-      this.releaseStartTime = 0; // reset release timer
+      this.releaseStartTime = 0;
       this.missedFrames = 0;
 
       if (rawPose === this.currentPose) {
-        // Holding current pose
         this.candidatePose = null;
         return {
           detectedPose: this.currentPose,
           confidence: 1.0,
-          rawPose
+          rawPose,
         };
       }
 
@@ -237,20 +265,16 @@ export class PoseDebouncer {
           this.candidatePose = null;
         }
       } else {
-        // New candidate pose
         this.candidatePose = rawPose;
         this.candidateStartTime = now;
       }
     } else {
-      // Raw pose was not detected in this frame
       this.missedFrames++;
 
-      // Only cancel candidate if consistently missing for more than maxMissedFrames
       if (this.missedFrames > this.maxMissedFrames) {
         this.candidatePose = null;
       }
 
-      // Handle release of currently active pose
       if (this.currentPose) {
         if (this.releaseStartTime === 0) {
           this.releaseStartTime = now;
@@ -264,7 +288,7 @@ export class PoseDebouncer {
     return {
       detectedPose: this.currentPose,
       confidence: this.currentPose ? 1.0 : 0.0,
-      rawPose
+      rawPose,
     };
   }
 

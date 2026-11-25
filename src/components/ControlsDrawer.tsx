@@ -1,14 +1,14 @@
-import React from 'react';
-import { 
-  X, 
-  Sliders, 
-  Volume2, 
-  VolumeX, 
-  Sparkles, 
-  FlipHorizontal, 
-  SwitchCamera, 
-  Eye, 
-  EyeOff, 
+import React, { memo } from 'react';
+import {
+  X,
+  Sliders,
+  Volume2,
+  VolumeX,
+  Sparkles,
+  FlipHorizontal,
+  SwitchCamera,
+  Eye,
+  EyeOff,
   HelpCircle,
   Activity,
   Maximize2,
@@ -16,7 +16,7 @@ import {
   ZoomIn,
   RotateCcw,
   Camera as CameraIcon,
-  Video
+  Video,
 } from 'lucide-react';
 import { CameraDeviceInfo, AspectRatioMode } from '../utils/cameraManager';
 
@@ -52,7 +52,7 @@ interface ControlsDrawerProps {
   cameraResolution: { width: number; height: number };
 }
 
-export const ControlsDrawer: React.FC<ControlsDrawerProps> = ({
+export const ControlsDrawer: React.FC<ControlsDrawerProps> = memo(({
   isOpen,
   onClose,
   bloomIntensity,
@@ -300,8 +300,8 @@ export const ControlsDrawer: React.FC<ControlsDrawerProps> = ({
             <button
               onClick={onFitModeToggle}
               className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl border text-xs font-medium transition-all ${
-                fitMode === 'contain' 
-                  ? 'bg-amber-500/20 border-amber-400/50 text-amber-200 shadow-sm shadow-amber-500/20' 
+                fitMode === 'contain'
+                  ? 'bg-amber-500/20 border-amber-400/50 text-amber-200 shadow-sm shadow-amber-500/20'
                   : 'bg-white/[0.04] border-white/10 text-white/70 hover:bg-white/[0.08]'
               }`}
             >
@@ -316,8 +316,8 @@ export const ControlsDrawer: React.FC<ControlsDrawerProps> = ({
             <button
               onClick={onSkeletonToggle}
               className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl border text-xs font-medium transition-all ${
-                showSkeleton 
-                  ? 'bg-cyan-500/20 border-cyan-400/50 text-cyan-200 shadow-sm shadow-cyan-500/20' 
+                showSkeleton
+                  ? 'bg-cyan-500/20 border-cyan-400/50 text-cyan-200 shadow-sm shadow-cyan-500/20'
                   : 'bg-white/[0.04] border-white/10 text-white/70 hover:bg-white/[0.08]'
               }`}
             >
@@ -332,8 +332,8 @@ export const ControlsDrawer: React.FC<ControlsDrawerProps> = ({
             <button
               onClick={onMirrorToggle}
               className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl border text-xs font-medium transition-all ${
-                isMirrored 
-                  ? 'bg-amber-500/20 border-amber-400/50 text-amber-200' 
+                isMirrored
+                  ? 'bg-amber-500/20 border-amber-400/50 text-amber-200'
                   : 'bg-white/[0.04] border-white/10 text-white/70 hover:bg-white/[0.08]'
               }`}
             >
@@ -362,8 +362,8 @@ export const ControlsDrawer: React.FC<ControlsDrawerProps> = ({
             <button
               onClick={onToggleForceFilter}
               className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl border text-xs font-medium transition-all ${
-                forceFilter 
-                  ? 'bg-gradient-to-r from-amber-500/30 to-yellow-500/30 border-amber-400 text-amber-200 shadow-[0_0_15px_rgba(255,215,0,0.3)]' 
+                forceFilter
+                  ? 'bg-gradient-to-r from-amber-500/30 to-yellow-500/30 border-amber-400 text-amber-200 shadow-[0_0_15px_rgba(255,215,0,0.3)]'
                   : 'bg-white/[0.04] border-white/10 text-white/70 hover:bg-white/[0.08]'
               }`}
             >
@@ -392,4 +392,7 @@ export const ControlsDrawer: React.FC<ControlsDrawerProps> = ({
       </div>
     </div>
   );
-};
+});
+
+ControlsDrawer.displayName = 'ControlsDrawer';
+export default ControlsDrawer;

@@ -1,53 +1,85 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
-import confetti from 'canvas-confetti';
-import { 
-  Camera, 
-  RotateCw, 
-  Sliders, 
-  Sparkles, 
-  Video, 
-  Square, 
-  HelpCircle, 
-  Volume2, 
-  VolumeX, 
+import React, { useEffect, useRef, useState, useCallback, lazy, Suspense, memo } from 'react';
+import {
+  Camera,
+  RotateCw,
+  Sliders,
+  Sparkles,
+  Video,
+  Square,
+  HelpCircle,
+  Volume2,
+  VolumeX,
   FlipHorizontal,
   Eye,
   EyeOff,
   Flame,
   Maximize2,
-  Minimize2
+  Minimize2,
 } from 'lucide-react';
 
 import { WebGLFilterPipeline } from './utils/webglRenderer';
 import { MajesticAudioManager } from './utils/audioManager';
 import { PoseDetectorService } from './utils/poseDetector';
-import { 
-  classifyPoseGeometry, 
-  PoseDebouncer, 
-  PoseType, 
-  NormalizedLandmark 
+import {
+  classifyPoseGeometry,
+  PoseDebouncer,
+  PoseType,
+  NormalizedLandmark,
 } from './utils/poseClassifier';
 import { renderNeonSkeleton } from './utils/skeletonRenderer';
-import { 
-  getAvailableCameras, 
-  buildMediaConstraints, 
-  applyTrackWideZoom, 
-  CameraDeviceInfo, 
-  AspectRatioMode 
+import {
+  getAvailableCameras,
+  buildMediaConstraints,
+  applyTrackWideZoom,
+  CameraDeviceInfo,
+  AspectRatioMode,
 } from './utils/cameraManager';
 import { isIOS } from './utils/deviceUtils';
 import { PoseBadge } from './components/PoseBadge';
-import { ControlsDrawer } from './components/ControlsDrawer';
-import { PoseGuideModal } from './components/PoseGuideModal';
-import { RecordModal } from './components/RecordModal';
+
+// Lazy-load secondary drawers & modals so initial bundle stays minimal
+const ControlsDrawer = lazy(() => import('./components/ControlsDrawer'));
+const PoseGuideModal = lazy(() => import('./components/PoseGuideModal'));
+const RecordModal = lazy(() => import('./components/RecordModal'));
+
+const SUPPORTED_POSE_CHIPS = ['Front Double Bicep', 'Zyzz Pose', 'Lat Spread', 'Any Flex'] as const;
+const CONFETTI_COLORS = ['#ffd700', '#ffea75', '#ffffff', '#e6c200'];
+
+let cachedConfettiFn: ((opts: Record<string, unknown>) => unknown) | null = null;
+function loadConfetti() {
+  if (cachedConfettiFn) return Promise.resolve(cachedConfettiFn);
+  return import('canvas-confetti').then((mod) => {
+    cachedConfettiFn = mod.default as unknown as (opts: Record<string, unknown>) => unknown;
+    return cachedConfettiFn;
+  });
+}
+
+// Isolated timer badge prevents 1Hz App-wide re-renders during recording
+const RecordingTimerBadge: React.FC = memo(() => {
+  const [seconds, setSeconds] = useState(0);
+
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      setSeconds((s) => s + 1);
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  return (
+    <div className="absolute top-[max(9rem,calc(env(safe-area-inset-top)+7rem))] z-30 flex items-center gap-2 px-3 py-1.5 rounded-full bg-red-600/90 text-white font-mono text-xs font-bold tracking-wider animate-pulse shadow-lg shadow-red-600/50">
+      <span className="w-2 h-2 rounded-full bg-white" />
+      REC {String(Math.floor(seconds / 60)).padStart(2, '0')}:
+      {String(seconds % 60).padStart(2, '0')}
+    </div>
+  );
+});
+RecordingTimerBadge.displayName = 'RecordingTimerBadge';
 
 export const App: React.FC = () => {
-  // Determine if mobile portrait or iPad
   const isInitialMobile = typeof window !== 'undefined' ? window.innerWidth < 1024 || isIOS() : true;
 
-  // Camera State
+  // Camera & AI State
   const [isCameraActive, setIsCameraActive] = useState(false);
-  const [, setIsModelLoading] = useState(false);
   const [isModelReady, setIsModelReady] = useState(false);
   const [modelStatus, setModelStatus] = useState<string>('Awakening Divine AI Vision...');
   const [modelError, setModelError] = useState<string | null>(null);
@@ -63,7 +95,7 @@ export const App: React.FC = () => {
 
   const [isMirrored, setIsMirrored] = useState(true);
   const [showSkeleton, setShowSkeleton] = useState(true);
-  const [fitMode, setFitMode] = useState<'contain' | 'cover'>('contain'); // Default to 'contain' for wide-angle full view without cropping!
+  const [fitMode, setFitMode] = useState<'contain' | 'cover'>('contain');
   const [cameraZoom, setCameraZoom] = useState<number>(1.0);
 
   // Filter & Audio Settings
@@ -79,7 +111,6 @@ export const App: React.FC = () => {
 
   // Recording State
   const [isRecording, setIsRecording] = useState(false);
-  const [recordSeconds, setRecordSeconds] = useState(0);
   const [recordedVideoUrl, setRecordedVideoUrl] = useState<string | null>(null);
   const [recordedBlob, setRecordedBlob] = useState<Blob | null>(null);
   const [isRecordModalOpen, setIsRecordModalOpen] = useState(false);
@@ -92,6 +123,7 @@ export const App: React.FC = () => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const webglCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const skeletonCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const skeletonCtxRef = useRef<CanvasRenderingContext2D | null>(null);
 
   // Service instances
   const webglPipelineRef = useRef<WebGLFilterPipeline | null>(null);
@@ -100,46 +132,59 @@ export const App: React.FC = () => {
   const debouncerRef = useRef<PoseDebouncer>(new PoseDebouncer(250, 400));
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordChunksRef = useRef<Blob[]>([]);
-  const recordTimerRef = useRef<number | null>(null);
   const capturedTracksRef = useRef<MediaStreamTrack[]>([]);
-  const isRecordModalOpenRef = useRef<boolean>(false);
+  const recordedVideoUrlRef = useRef<string | null>(null);
 
-  // Animation frame loop
+  // Render loop state refs (prevents RAF teardown/re-creation on React state updates)
   const animFrameIdRef = useRef<number | null>(null);
   const lastTimeRef = useRef<number>(performance.now());
   const lastPoseRef = useRef<PoseType | null>(null);
+  const lastRawPoseRef = useRef<PoseType | null>(null);
   const currentLandmarksRef = useRef<NormalizedLandmark[] | null>(null);
+  const lastDrawnLandmarksRef = useRef<NormalizedLandmark[] | null>(null);
+  const lastDrawnSkeletonMirrorRef = useRef<boolean | null>(null);
+  const lastDrawnSkeletonActiveRef = useRef<boolean | null>(null);
+  const isSkeletonClearedRef = useRef<boolean>(true);
 
-  // Initialize Pose Model with progress tracking
+  const liveSettingsRef = useRef({
+    isMirrored,
+    showSkeleton,
+    poseSensitivity,
+    forceFilter,
+    bloomIntensity,
+    cameraZoom,
+  });
+  liveSettingsRef.current = {
+    isMirrored,
+    showSkeleton,
+    poseSensitivity,
+    forceFilter,
+    bloomIntensity,
+    cameraZoom,
+  };
+
+  // Initialize Pose Model
   const initPoseModel = useCallback(async () => {
     poseDetectorRef.current = PoseDetectorService.getInstance();
-    setIsModelLoading(true);
     setModelError(null);
     setModelStatus('Awakening Divine AI Vision...');
 
     try {
       await poseDetectorRef.current.init();
       setIsModelReady(true);
-      setIsModelLoading(false);
       setModelStatus('AI Vision Active');
     } catch (err: unknown) {
       console.error('Pose detector init failure:', err);
       const msg = err instanceof Error ? err.message : String(err);
       setModelError(msg);
       setModelStatus(`AI Vision Error: ${msg}`);
-      setIsModelLoading(false);
     }
   }, []);
 
-  // Enumerate cameras on mount
+  // Enumerate cameras & check query params on mount
   useEffect(() => {
-    getAvailableCameras().then((cams) => {
-      setAvailableCameras(cams);
-    });
-  }, []);
+    getAvailableCameras().then(setAvailableCameras);
 
-  // Check URL query parameters for direct modal / guide testing
-  useEffect(() => {
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
       if (params.get('guide') === '1') {
@@ -148,89 +193,119 @@ export const App: React.FC = () => {
     }
   }, []);
 
-  // Initialize Audio & Pose Services
+  // Initialize services on mount and clean up resources on unmount
   useEffect(() => {
-    audioManagerRef.current = new MajesticAudioManager();
+    const audioManager = new MajesticAudioManager();
+    audioManagerRef.current = audioManager;
     poseDetectorRef.current = PoseDetectorService.getInstance();
     initPoseModel();
+
+    // Warm up confetti and compressed audio bytes during browser idle time
+    const idleWarmup = () => {
+      void audioManager.preloadTrackBytes();
+      void loadConfetti();
+    };
+    if (typeof window.requestIdleCallback === 'function') {
+      window.requestIdleCallback(idleWarmup);
+    } else {
+      setTimeout(idleWarmup, 400);
+    }
+
+    return () => {
+      if (animFrameIdRef.current !== null) {
+        cancelAnimationFrame(animFrameIdRef.current);
+      }
+      if (videoRef.current?.srcObject) {
+        const stream = videoRef.current.srcObject as MediaStream;
+        stream.getTracks().forEach((t) => t.stop());
+        videoRef.current.srcObject = null;
+      }
+      capturedTracksRef.current.forEach((t) => {
+        try {
+          t.stop();
+        } catch {
+          // ignore
+        }
+      });
+      if (recordedVideoUrlRef.current) {
+        URL.revokeObjectURL(recordedVideoUrlRef.current);
+      }
+      webglPipelineRef.current?.destroy();
+      webglPipelineRef.current = null;
+      audioManager.destroy();
+    };
   }, [initPoseModel]);
 
   // Sync settings with WebGL and Audio
   useEffect(() => {
-    if (webglPipelineRef.current) {
-      webglPipelineRef.current.bloomStrength = bloomIntensity;
-      webglPipelineRef.current.isMirrored = isMirrored;
-      webglPipelineRef.current.cameraZoom = cameraZoom;
+    const pipeline = webglPipelineRef.current;
+    if (pipeline) {
+      pipeline.bloomStrength = bloomIntensity;
+      pipeline.isMirrored = isMirrored;
+      pipeline.cameraZoom = cameraZoom;
     }
   }, [bloomIntensity, isMirrored, cameraZoom]);
 
   useEffect(() => {
-    if (audioManagerRef.current) {
-      audioManagerRef.current.setVolume(audioVolume);
-      audioManagerRef.current.setMuted(isMuted);
+    const audio = audioManagerRef.current;
+    if (audio) {
+      audio.setVolume(audioVolume);
+      audio.setMuted(isMuted);
     }
   }, [audioVolume, isMuted]);
 
   // Trigger celebration sparkles
   const triggerMajesticSparkles = useCallback(() => {
-    try {
-      confetti({
-        particleCount: 45,
-        spread: 70,
-        origin: { y: 0.65 },
-        colors: ['#ffd700', '#ffea75', '#ffffff', '#e6c200'],
-        disableForReducedMotion: true,
-      });
-    } catch {
-      // ignore
-    }
+    loadConfetti()
+      .then((confetti) => {
+        confetti({
+          particleCount: 45,
+          spread: 70,
+          origin: { y: 0.65 },
+          colors: CONFETTI_COLORS,
+          disableForReducedMotion: true,
+        });
+      })
+      .catch(() => {});
   }, []);
 
   // Start Camera Stream with specified configuration
-  const startCameraWithConfig = async (
-    nextFacing: 'user' | 'environment',
-    nextDeviceId?: string,
-    nextAspectMode?: AspectRatioMode
-  ) => {
-    setCameraError(null);
+  const startCameraWithConfig = useCallback(
+    async (
+      nextFacing: 'user' | 'environment',
+      nextDeviceId?: string,
+      nextAspectMode?: AspectRatioMode
+    ) => {
+      setCameraError(null);
 
-    // Initialize AudioContext on user gesture
-    if (audioManagerRef.current) {
-      await audioManagerRef.current.init();
-    }
+      // Unlock AudioContext synchronously in user gesture without blocking camera acquisition on audio download
+      audioManagerRef.current?.init();
 
-    // Stop existing stream if any and detach
-    if (videoRef.current && videoRef.current.srcObject) {
-      const existing = videoRef.current.srcObject as MediaStream;
-      existing.getTracks().forEach((t) => t.stop());
-      videoRef.current.srcObject = null;
-      // Brief pause for iOS hardware camera session release
-      await new Promise((r) => setTimeout(r, 60));
-    }
-
-    const aspect = nextAspectMode || aspectRatioMode;
-    const constraints = buildMediaConstraints({
-      facingMode: nextFacing,
-      deviceId: nextDeviceId,
-      aspectRatioMode: aspect,
-    });
-
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      const track = stream.getVideoTracks()[0];
-      if (track) {
-        await applyTrackWideZoom(track);
+      // Stop existing stream if any and detach
+      if (videoRef.current && videoRef.current.srcObject) {
+        const existing = videoRef.current.srcObject as MediaStream;
+        existing.getTracks().forEach((t) => t.stop());
+        videoRef.current.srcObject = null;
+        // Brief pause for iOS hardware camera session release
+        await new Promise((r) => setTimeout(r, 60));
       }
 
-      if (videoRef.current) {
+      const aspect = nextAspectMode || aspectRatioMode;
+      const constraints = buildMediaConstraints({
+        facingMode: nextFacing,
+        deviceId: nextDeviceId,
+        aspectRatioMode: aspect,
+      });
+
+      const attachStream = async (stream: MediaStream) => {
         const video = videoRef.current;
+        if (!video) return;
         video.muted = true;
         video.playsInline = true;
         video.setAttribute('playsinline', 'true');
         video.setAttribute('webkit-playsinline', 'true');
         video.srcObject = stream;
 
-        // On iOS Safari, wait for metadata before play() to ensure videoWidth and videoHeight are populated
         await new Promise<void>((resolve) => {
           if (video.readyState >= 1) {
             resolve();
@@ -244,47 +319,39 @@ export const App: React.FC = () => {
 
         const vW = video.videoWidth || 1280;
         const vH = video.videoHeight || 720;
-        setCameraResolution({ width: vW, height: vH });
-      }
+        setCameraResolution((prev) =>
+          prev.width === vW && prev.height === vH ? prev : { width: vW, height: vH }
+        );
+      };
 
-      // Refresh camera devices list with actual device permissions granted
-      getAvailableCameras().then((cams) => setAvailableCameras(cams));
-    } catch (err: unknown) {
-      console.warn('Initial camera constraint failed, retrying fallback constraints:', err);
       try {
-        const fallbackStream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: nextFacing } },
-          audio: false,
-        });
-        if (videoRef.current) {
-          const video = videoRef.current;
-          video.muted = true;
-          video.playsInline = true;
-          video.setAttribute('playsinline', 'true');
-          video.setAttribute('webkit-playsinline', 'true');
-          video.srcObject = fallbackStream;
-
-          await new Promise<void>((resolve) => {
-            if (video.readyState >= 1) resolve();
-            else video.onloadedmetadata = () => resolve();
-          });
-
-          await video.play();
-          setIsCameraActive(true);
-          setCameraResolution({
-            width: video.videoWidth || 1280,
-            height: video.videoHeight || 720,
-          });
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        const track = stream.getVideoTracks()[0];
+        if (track) {
+          await applyTrackWideZoom(track);
         }
-      } catch (finalErr: unknown) {
-        console.error('Camera access denied:', finalErr);
-        const error = finalErr as { message?: string };
-        setCameraError(error.message || 'Please grant camera access to use the Majestic Gym Pose Filter.');
-      }
-    }
-  };
 
-  // iOS Safari / iPadOS Lifecycle: Auto-resume camera video & audio if paused or terminated when tab is foregrounded
+        await attachStream(stream);
+        getAvailableCameras().then(setAvailableCameras);
+      } catch (err: unknown) {
+        console.warn('Initial camera constraint failed, retrying fallback constraints:', err);
+        try {
+          const fallbackStream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: { ideal: nextFacing } },
+            audio: false,
+          });
+          await attachStream(fallbackStream);
+        } catch (finalErr: unknown) {
+          console.error('Camera access denied:', finalErr);
+          const error = finalErr as { message?: string };
+          setCameraError(error.message || 'Please grant camera access to use the Majestic Gym Pose Filter.');
+        }
+      }
+    },
+    [aspectRatioMode]
+  );
+
+  // iOS Safari / iPadOS Lifecycle: Auto-resume camera video & audio when tab returns to foreground
   useEffect(() => {
     const handleResume = async () => {
       if (document.visibilityState === 'visible' && isCameraActive && videoRef.current) {
@@ -301,18 +368,14 @@ export const App: React.FC = () => {
             }
           }
         } else {
-          // Camera track was terminated by iOS when tab was backgrounded or screen locked
           try {
-            console.log('Restoring camera stream after tab foregrounded on iOS/iPadOS...');
             await startCameraWithConfig(facingMode, selectedDeviceId, aspectRatioMode);
           } catch (e) {
             console.warn('Failed to restart camera after foregrounding:', e);
           }
         }
 
-        if (audioManagerRef.current) {
-          audioManagerRef.current.resumeIfSuspended();
-        }
+        audioManagerRef.current?.resumeIfSuspended();
       }
     };
 
@@ -322,51 +385,51 @@ export const App: React.FC = () => {
 
     return () => {
       document.removeEventListener('visibilitychange', handleResume);
-      document.removeEventListener('pageshow', handleResume);
+      window.removeEventListener('pageshow', handleResume);
       window.removeEventListener('focus', handleResume);
     };
-  }, [isCameraActive, facingMode, selectedDeviceId, aspectRatioMode]);
+  }, [isCameraActive, facingMode, selectedDeviceId, aspectRatioMode, startCameraWithConfig]);
 
-  const startCamera = () => {
-    startCameraWithConfig(facingMode, selectedDeviceId, aspectRatioMode);
-  };
+  const startCamera = useCallback(() => {
+    void startCameraWithConfig(facingMode, selectedDeviceId, aspectRatioMode);
+  }, [facingMode, selectedDeviceId, aspectRatioMode, startCameraWithConfig]);
 
-  // Switch between front and rear cameras
-  const switchCamera = async () => {
+  const switchCamera = useCallback(async () => {
     const nextMode = facingMode === 'user' ? 'environment' : 'user';
     setFacingMode(nextMode);
     setIsMirrored(nextMode === 'user');
-    setSelectedDeviceId(undefined); // Reset device ID to allow default facing
+    setSelectedDeviceId(undefined);
     await startCameraWithConfig(nextMode, undefined, aspectRatioMode);
-  };
+  }, [facingMode, aspectRatioMode, startCameraWithConfig]);
 
-  // Switch specific camera device
-  const handleSelectCamera = async (deviceId: string) => {
-    setSelectedDeviceId(deviceId);
-    const targetCam = availableCameras.find((c) => c.deviceId === deviceId);
-    if (targetCam && targetCam.facing !== 'unknown') {
-      setFacingMode(targetCam.facing);
-      setIsMirrored(targetCam.facing === 'user');
-    }
-    await startCameraWithConfig(facingMode, deviceId, aspectRatioMode);
-  };
+  const handleSelectCamera = useCallback(
+    async (deviceId: string) => {
+      setSelectedDeviceId(deviceId);
+      const targetCam = availableCameras.find((c) => c.deviceId === deviceId);
+      let nextFacing = facingMode;
+      if (targetCam && targetCam.facing !== 'unknown') {
+        nextFacing = targetCam.facing;
+        setFacingMode(nextFacing);
+        setIsMirrored(nextFacing === 'user');
+      }
+      await startCameraWithConfig(nextFacing, deviceId, aspectRatioMode);
+    },
+    [availableCameras, facingMode, aspectRatioMode, startCameraWithConfig]
+  );
 
-  // Switch aspect ratio mode (3:4 Wide Sensor vs 9:16 Portrait)
-  const handleAspectRatioChange = async (mode: AspectRatioMode) => {
-    setAspectRatioMode(mode);
-    if (isCameraActive) {
-      await startCameraWithConfig(facingMode, selectedDeviceId, mode);
-    }
-  };
+  const handleAspectRatioChange = useCallback(
+    async (mode: AspectRatioMode) => {
+      setAspectRatioMode(mode);
+      if (isCameraActive) {
+        await startCameraWithConfig(facingMode, selectedDeviceId, mode);
+      }
+    },
+    [isCameraActive, facingMode, selectedDeviceId, startCameraWithConfig]
+  );
 
-  // Main Render & Detection Loop
+  // Stable Main Render & Detection Loop (zero dependency churn)
   const renderFrame = useCallback(() => {
     try {
-      // Idle cleanly while record preview modal is open to prevent iOS WebKit GPU context exhaustion
-      if (isRecordModalOpenRef.current) {
-        return;
-      }
-
       const video = videoRef.current;
       const webglCanvas = webglCanvasRef.current;
       const skeletonCanvas = skeletonCanvasRef.current;
@@ -376,38 +439,56 @@ export const App: React.FC = () => {
         const deltaSec = Math.min((now - lastTimeRef.current) / 1000, 0.1);
         lastTimeRef.current = now;
 
-        // Update canvas dimensions to match video stream aspect ratio
+        const {
+          isMirrored: mirrorNow,
+          showSkeleton: showSkeletonNow,
+          poseSensitivity: sensitivityNow,
+          forceFilter: forceNow,
+          bloomIntensity: bloomNow,
+          cameraZoom: zoomNow,
+        } = liveSettingsRef.current;
+
+        // Sync canvas dimensions only when video stream dimensions change
         const videoWidth = video.videoWidth;
         const videoHeight = video.videoHeight;
 
         if (webglCanvas.width !== videoWidth || webglCanvas.height !== videoHeight) {
           webglCanvas.width = videoWidth;
           webglCanvas.height = videoHeight;
-          setCameraResolution({ width: videoWidth, height: videoHeight });
+          setCameraResolution((prev) =>
+            prev.width === videoWidth && prev.height === videoHeight
+              ? prev
+              : { width: videoWidth, height: videoHeight }
+          );
         }
 
         if (skeletonCanvas && (skeletonCanvas.width !== videoWidth || skeletonCanvas.height !== videoHeight)) {
           skeletonCanvas.width = videoWidth;
           skeletonCanvas.height = videoHeight;
+          skeletonCtxRef.current = skeletonCanvas.getContext('2d');
+          lastDrawnLandmarksRef.current = null;
         }
 
-        // Initialize WebGL pipeline if needed
+        // Initialize WebGL pipeline lazily once canvas is mounted
         if (!webglPipelineRef.current) {
-          webglPipelineRef.current = new WebGLFilterPipeline(webglCanvas);
-          webglPipelineRef.current.bloomStrength = bloomIntensity;
-          webglPipelineRef.current.isMirrored = isMirrored;
-          webglPipelineRef.current.cameraZoom = cameraZoom;
-        } else {
-          webglPipelineRef.current.cameraZoom = cameraZoom;
+          const pipeline = new WebGLFilterPipeline(webglCanvas);
+          pipeline.bloomStrength = bloomNow;
+          pipeline.isMirrored = mirrorNow;
+          pipeline.cameraZoom = zoomNow;
+          webglPipelineRef.current = pipeline;
         }
 
         // 1. Pose Detection via MediaPipe (skip if paused to save CPU)
         if (poseDetectorRef.current && poseDetectorRef.current.isReady() && !video.paused) {
           const landmarks = poseDetectorRef.current.detectPose(video, now);
+          currentLandmarksRef.current = landmarks;
+
           if (landmarks) {
-            currentLandmarksRef.current = landmarks;
-            const { pose: classifiedPose } = classifyPoseGeometry(landmarks, poseSensitivity);
-            setRawPose(classifiedPose);
+            const { pose: classifiedPose } = classifyPoseGeometry(landmarks, sensitivityNow);
+            if (classifiedPose !== lastRawPoseRef.current) {
+              lastRawPoseRef.current = classifiedPose;
+              setRawPose(classifiedPose);
+            }
 
             const { detectedPose: debouncedPose } = debouncerRef.current.update(classifiedPose, now);
 
@@ -417,93 +498,128 @@ export const App: React.FC = () => {
 
               if (debouncedPose) {
                 triggerMajesticSparkles();
-                if (audioManagerRef.current) {
-                  audioManagerRef.current.triggerPoseAudio();
-                }
-              } else if (!forceFilter) {
-                if (audioManagerRef.current) {
-                  audioManagerRef.current.releasePoseAudio();
-                }
+                audioManagerRef.current?.triggerPoseAudio();
+              } else if (!forceNow) {
+                audioManagerRef.current?.releasePoseAudio();
               }
             }
           } else {
-            // No landmarks in this frame
+            if (lastRawPoseRef.current !== null) {
+              lastRawPoseRef.current = null;
+              setRawPose(null);
+            }
+
             const { detectedPose: debouncedPose } = debouncerRef.current.update(null, now);
             if (debouncedPose !== lastPoseRef.current) {
               lastPoseRef.current = debouncedPose;
               setDetectedPose(debouncedPose);
-              if (!debouncedPose && !forceFilter && audioManagerRef.current) {
-                audioManagerRef.current.releasePoseAudio();
+              if (!debouncedPose && !forceNow) {
+                audioManagerRef.current?.releasePoseAudio();
               }
             }
           }
         }
 
-        // Filter active condition
-        const isMajesticActive = Boolean(detectedPose || forceFilter);
+        // Active aura condition
+        const isMajesticActive = Boolean(lastPoseRef.current || forceNow);
 
         // 2. Render WebGL Majestic Shader
         webglPipelineRef.current.render(video, now / 1000, deltaSec, isMajesticActive);
 
-        // 3. Render Neon Skeleton Wireframe (if enabled)
-        if (skeletonCanvas && showSkeleton && currentLandmarksRef.current) {
-          const ctx = skeletonCanvas.getContext('2d');
-          if (ctx) {
-            renderNeonSkeleton(
-              ctx,
-              currentLandmarksRef.current,
-              skeletonCanvas.width,
-              skeletonCanvas.height,
-              {
-                isMirrored,
-                isPoseActive: isMajesticActive,
+        // 3. Render Neon Skeleton Wireframe (dirty-checked to avoid redundant 2D rasterization)
+        if (skeletonCanvas) {
+          const landmarks = currentLandmarksRef.current;
+          if (showSkeletonNow && landmarks) {
+            if (
+              landmarks !== lastDrawnLandmarksRef.current ||
+              mirrorNow !== lastDrawnSkeletonMirrorRef.current ||
+              isMajesticActive !== lastDrawnSkeletonActiveRef.current
+            ) {
+              const ctx = skeletonCtxRef.current || (skeletonCtxRef.current = skeletonCanvas.getContext('2d'));
+              if (ctx) {
+                renderNeonSkeleton(ctx, landmarks, skeletonCanvas.width, skeletonCanvas.height, {
+                  isMirrored: mirrorNow,
+                  isPoseActive: isMajesticActive,
+                });
+                lastDrawnLandmarksRef.current = landmarks;
+                lastDrawnSkeletonMirrorRef.current = mirrorNow;
+                lastDrawnSkeletonActiveRef.current = isMajesticActive;
+                isSkeletonClearedRef.current = false;
               }
-            );
+            }
+          } else if (!isSkeletonClearedRef.current) {
+            const ctx = skeletonCtxRef.current || (skeletonCtxRef.current = skeletonCanvas.getContext('2d'));
+            if (ctx) {
+              ctx.clearRect(0, 0, skeletonCanvas.width, skeletonCanvas.height);
+              lastDrawnLandmarksRef.current = null;
+              isSkeletonClearedRef.current = true;
+            }
           }
-        } else if (skeletonCanvas) {
-          const ctx = skeletonCanvas.getContext('2d');
-          if (ctx) ctx.clearRect(0, 0, skeletonCanvas.width, skeletonCanvas.height);
         }
       }
     } catch (frameErr) {
       console.warn('Frame render error caught:', frameErr);
-    } finally {
-      animFrameIdRef.current = requestAnimationFrame(renderFrame);
     }
-  }, [detectedPose, forceFilter, isMirrored, poseSensitivity, showSkeleton, bloomIntensity, cameraZoom, triggerMajesticSparkles]);
 
+    animFrameIdRef.current = requestAnimationFrame(renderFrame);
+  }, [triggerMajesticSparkles]);
+
+  // Run RAF loop only while camera is active and preview modal is closed
   useEffect(() => {
-    if (isCameraActive) {
+    if (isCameraActive && !isRecordModalOpen) {
+      lastTimeRef.current = performance.now();
       animFrameIdRef.current = requestAnimationFrame(renderFrame);
     }
     return () => {
-      if (animFrameIdRef.current) {
+      if (animFrameIdRef.current !== null) {
         cancelAnimationFrame(animFrameIdRef.current);
+        animFrameIdRef.current = null;
       }
     };
-  }, [isCameraActive, renderFrame]);
+  }, [isCameraActive, isRecordModalOpen, renderFrame]);
 
-  // Handle force filter toggle
-  const handleToggleForceFilter = () => {
-    const nextVal = !forceFilter;
-    setForceFilter(nextVal);
-    if (nextVal) {
-      triggerMajesticSparkles();
-      if (audioManagerRef.current) {
-        audioManagerRef.current.triggerPoseAudio();
+  // UI toggle handlers (memoized for React.memo children)
+  const handleToggleForceFilter = useCallback(() => {
+    setForceFilter((prev) => {
+      const nextVal = !prev;
+      if (nextVal) {
+        triggerMajesticSparkles();
+        audioManagerRef.current?.triggerPoseAudio();
+      } else if (!lastPoseRef.current) {
+        audioManagerRef.current?.releasePoseAudio();
       }
-    } else if (!detectedPose && audioManagerRef.current) {
-      audioManagerRef.current.releasePoseAudio();
-    }
-  };
+      return nextVal;
+    });
+  }, [triggerMajesticSparkles]);
+
+  const handleToggleFitMode = useCallback(() => {
+    setFitMode((prev) => (prev === 'contain' ? 'cover' : 'contain'));
+  }, []);
+
+  const handleToggleMute = useCallback(() => {
+    setIsMuted((prev) => !prev);
+  }, []);
+
+  const handleToggleSkeleton = useCallback(() => {
+    setShowSkeleton((prev) => !prev);
+  }, []);
+
+  const handleToggleMirror = useCallback(() => {
+    setIsMirrored((prev) => !prev);
+  }, []);
+
+  const handleCloseControls = useCallback(() => setIsControlsOpen(false), []);
+  const handleOpenGuide = useCallback(() => setIsGuideOpen(true), []);
+  const handleCloseGuide = useCallback(() => setIsGuideOpen(false), []);
 
   // Recording Logic
-  const startRecording = () => {
+  const startRecording = useCallback(() => {
     const canvas = webglCanvasRef.current;
     if (!canvas) return;
 
     try {
-      const captureStreamFn = (canvas as unknown as { captureStream?: (fps: number) => MediaStream; webkitCaptureStream?: (fps: number) => MediaStream }).captureStream ||
+      const captureStreamFn =
+        (canvas as unknown as { captureStream?: (fps: number) => MediaStream; webkitCaptureStream?: (fps: number) => MediaStream }).captureStream ||
         (canvas as unknown as { captureStream?: (fps: number) => MediaStream; webkitCaptureStream?: (fps: number) => MediaStream }).webkitCaptureStream;
 
       if (!captureStreamFn) {
@@ -524,7 +640,6 @@ export const App: React.FC = () => {
       const streamVideoOnly = new MediaStream([...videoTracks]);
 
       const isApple = isIOS();
-      // On iOS Safari, prioritize MP4 containers; on Android/Desktop, WebM
       const candidateMimes = isApple
         ? [
             'video/mp4;codecs=avc1,mp4a.40.2',
@@ -543,17 +658,18 @@ export const App: React.FC = () => {
 
       let chosenMime = '';
       for (const m of candidateMimes) {
-        if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)) {
+        if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported?.(m)) {
           chosenMime = m;
           break;
         }
       }
 
-      const recorderOptions: MediaRecorderOptions = {};
+      const recorderOptions: MediaRecorderOptions = {
+        videoBitsPerSecond: isApple ? 4000000 : 6000000,
+      };
       if (chosenMime) {
         recorderOptions.mimeType = chosenMime;
       }
-      recorderOptions.videoBitsPerSecond = isApple ? 4000000 : 6000000;
 
       let recorder: MediaRecorder;
       try {
@@ -571,7 +687,6 @@ export const App: React.FC = () => {
       };
 
       recorder.onstop = () => {
-        // Stop captured canvas tracks to free GPU context and iOS MediaStream resources
         if (capturedTracksRef.current.length > 0) {
           capturedTracksRef.current.forEach((t) => {
             try {
@@ -585,18 +700,21 @@ export const App: React.FC = () => {
 
         const finalType = recorder.mimeType || (isApple ? 'video/mp4' : 'video/webm');
         const blob = new Blob(recordChunksRef.current, { type: finalType });
+        recordChunksRef.current = [];
+
+        if (recordedVideoUrlRef.current) {
+          URL.revokeObjectURL(recordedVideoUrlRef.current);
+        }
         const url = URL.createObjectURL(blob);
+        recordedVideoUrlRef.current = url;
+
         setRecordedBlob(blob);
         setRecordedVideoUrl(url);
         setIsRecordModalOpen(true);
-        isRecordModalOpenRef.current = true;
         setIsRecording(false);
-        setRecordSeconds(0);
-        if (recordTimerRef.current) clearInterval(recordTimerRef.current);
       };
 
-      // CRITICAL FOR IOS: In iOS Safari, timeslice (e.g. 100ms) with video/mp4 creates fragmented unplayable blobs.
-      // Calling start() without timeslice produces a single valid MP4 container with the moov atom.
+      // On iOS Safari / MP4 containers, omit timeslice so a single valid moov atom is written
       if (isApple || chosenMime.includes('mp4')) {
         recorder.start();
       } else {
@@ -605,44 +723,36 @@ export const App: React.FC = () => {
 
       mediaRecorderRef.current = recorder;
       setIsRecording(true);
-      setRecordSeconds(0);
-
-      recordTimerRef.current = window.setInterval(() => {
-        setRecordSeconds((s) => s + 1);
-      }, 1000);
     } catch (err) {
       console.error('Failed to start recording:', err);
-      if (capturedTracksRef.current.length > 0) {
-        capturedTracksRef.current.forEach((t) => {
-          try {
-            t.stop();
-          } catch {}
-        });
-        capturedTracksRef.current = [];
-      }
+      capturedTracksRef.current.forEach((t) => {
+        try {
+          t.stop();
+        } catch {
+          // ignore
+        }
+      });
+      capturedTracksRef.current = [];
     }
-  };
+  }, []);
 
-  const stopRecording = () => {
+  const stopRecording = useCallback(() => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop();
     }
-  };
+  }, []);
 
-  // Safely restore camera stream & state when closing record preview modal (e.g., retake or exit)
+  // Safely restore camera stream & state when closing record preview modal
   const handleCloseRecordModal = useCallback(async () => {
     setIsRecordModalOpen(false);
-    isRecordModalOpenRef.current = false;
 
-    if (recordedVideoUrl) {
-      URL.revokeObjectURL(recordedVideoUrl);
-      setRecordedVideoUrl(null);
+    if (recordedVideoUrlRef.current) {
+      URL.revokeObjectURL(recordedVideoUrlRef.current);
+      recordedVideoUrlRef.current = null;
     }
+    setRecordedVideoUrl(null);
     setRecordedBlob(null);
 
-    // iOS Safari / WebKit Media Recovery:
-    // When the recorded preview played in RecordModal, iOS Safari pauses or detaches background camera tracks.
-    // Ensure the live camera stream is still running, tracks are live, and video playback is unpaused.
     const video = videoRef.current;
     if (!video) return;
 
@@ -660,14 +770,11 @@ export const App: React.FC = () => {
         }
       }
     } else {
-      console.log('Camera tracks ended or inactive during modal preview, re-initializing camera...');
       await startCameraWithConfig(facingMode, selectedDeviceId, aspectRatioMode);
     }
 
-    if (audioManagerRef.current) {
-      audioManagerRef.current.resumeIfSuspended();
-    }
-  }, [facingMode, selectedDeviceId, aspectRatioMode, recordedVideoUrl]);
+    audioManagerRef.current?.resumeIfSuspended();
+  }, [facingMode, selectedDeviceId, aspectRatioMode, startCameraWithConfig]);
 
   return (
     <div className="fixed inset-0 w-full h-[100dvh] overflow-hidden bg-[#09090b] flex flex-col items-center justify-center">
@@ -708,17 +815,15 @@ export const App: React.FC = () => {
           {/* WebGL Filter Output Canvas */}
           <canvas
             ref={webglCanvasRef}
-            className={`w-full h-full transition-all duration-300 ${
-              fitMode === 'contain' ? 'object-contain' : 'object-cover'
-            }`}
+            className={`w-full h-full ${fitMode === 'contain' ? 'object-contain' : 'object-cover'}`}
           />
 
           {/* Skeleton Overlay Canvas */}
           <canvas
             ref={skeletonCanvasRef}
-            className={`absolute inset-0 w-full h-full pointer-events-none transition-all duration-300 ${
+            className={`absolute inset-0 w-full h-full pointer-events-none ${
               fitMode === 'contain' ? 'object-contain' : 'object-cover'
-            }`}
+            } ${showSkeleton ? 'opacity-100' : 'opacity-0'}`}
           />
 
           {/* Top HUD Header with Safe Area clearance for Notch / Dynamic Island */}
@@ -742,9 +847,8 @@ export const App: React.FC = () => {
 
             {/* Quick Action Top Bar */}
             <div className="flex items-center gap-2 pointer-events-auto">
-              {/* Framing Mode Toggle (Wide Fit vs Full Screen) */}
               <button
-                onClick={() => setFitMode(fitMode === 'contain' ? 'cover' : 'contain')}
+                onClick={handleToggleFitMode}
                 className={`p-2.5 rounded-full glass-panel border transition-colors shadow-md ${
                   fitMode === 'contain' ? 'text-amber-400 border-amber-400/40 bg-amber-500/10' : 'text-white/60 border-white/10 hover:text-white'
                 }`}
@@ -754,7 +858,7 @@ export const App: React.FC = () => {
               </button>
 
               <button
-                onClick={() => setIsMuted(!isMuted)}
+                onClick={handleToggleMute}
                 className="p-2.5 rounded-full glass-panel text-white hover:text-amber-400 border border-white/10 transition-colors shadow-md"
                 title={isMuted ? 'Unmute Audio' : 'Mute Audio'}
               >
@@ -762,7 +866,7 @@ export const App: React.FC = () => {
               </button>
 
               <button
-                onClick={() => setShowSkeleton(!showSkeleton)}
+                onClick={handleToggleSkeleton}
                 className={`p-2.5 rounded-full glass-panel border transition-colors shadow-md ${
                   showSkeleton ? 'text-cyan-300 border-cyan-400/40 bg-cyan-500/10' : 'text-white/60 border-white/10 hover:text-white'
                 }`}
@@ -781,7 +885,7 @@ export const App: React.FC = () => {
             </div>
           </header>
 
-          {/* Center Dynamic HUD Status Badge with Safe Area clearance */}
+          {/* Center Dynamic HUD Status Badge */}
           <div className="absolute top-[max(5.5rem,calc(env(safe-area-inset-top)+3.5rem))] z-30 pointer-events-auto">
             <PoseBadge
               detectedPose={detectedPose}
@@ -793,20 +897,14 @@ export const App: React.FC = () => {
             />
           </div>
 
-          {/* Recording Timer Badge */}
-          {isRecording && (
-            <div className="absolute top-[max(9rem,calc(env(safe-area-inset-top)+7rem))] z-30 flex items-center gap-2 px-3 py-1.5 rounded-full bg-red-600/90 text-white font-mono text-xs font-bold tracking-wider animate-pulse shadow-lg shadow-red-600/50">
-              <span className="w-2 h-2 rounded-full bg-white" />
-              REC {String(Math.floor(recordSeconds / 60)).padStart(2, '0')}:
-              {String(recordSeconds % 60).padStart(2, '0')}
-            </div>
-          )}
+          {/* Isolated Recording Timer Badge */}
+          {isRecording && <RecordingTimerBadge />}
 
           {/* Floating On-Screen Quick Lens & FOV Selector */}
           <div className="absolute bottom-[max(6.5rem,calc(env(safe-area-inset-bottom)+5.5rem))] z-30 flex items-center gap-1.5 p-1 rounded-full glass-panel border border-white/15 shadow-xl shadow-black/50">
             <button
               onClick={() => handleAspectRatioChange('wide-sensor')}
-              className={`px-3 py-1 rounded-full text-xs font-bold tracking-wide transition-all ${
+              className={`px-3 py-1 rounded-full text-xs font-bold tracking-wide transition-colors ${
                 aspectRatioMode === 'wide-sensor'
                   ? 'bg-gradient-to-r from-amber-400 to-yellow-400 text-black shadow-md shadow-amber-400/30'
                   : 'text-white/75 hover:text-white'
@@ -816,7 +914,7 @@ export const App: React.FC = () => {
             </button>
             <button
               onClick={() => handleAspectRatioChange('portrait-9-16')}
-              className={`px-3 py-1 rounded-full text-xs font-bold tracking-wide transition-all ${
+              className={`px-3 py-1 rounded-full text-xs font-bold tracking-wide transition-colors ${
                 aspectRatioMode === 'portrait-9-16'
                   ? 'bg-gradient-to-r from-amber-400 to-yellow-400 text-black shadow-md shadow-amber-400/30'
                   : 'text-white/75 hover:text-white'
@@ -825,8 +923,8 @@ export const App: React.FC = () => {
               9:16 Crop
             </button>
             <button
-              onClick={() => setFitMode(fitMode === 'contain' ? 'cover' : 'contain')}
-              className={`px-3 py-1 rounded-full text-xs font-bold tracking-wide transition-all ${
+              onClick={handleToggleFitMode}
+              className={`px-3 py-1 rounded-full text-xs font-bold tracking-wide transition-colors ${
                 fitMode === 'contain'
                   ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-400/40'
                   : 'text-white/75 hover:text-white'
@@ -836,12 +934,11 @@ export const App: React.FC = () => {
             </button>
           </div>
 
-          {/* Bottom Floating Control Bar with Home Indicator clearance */}
+          {/* Bottom Floating Control Bar */}
           <footer className="absolute bottom-0 inset-x-0 pb-[max(1.5rem,env(safe-area-inset-bottom))] px-5 sm:px-8 pt-2 flex items-center justify-around z-30 max-w-lg mx-auto">
-            {/* Mirror Toggle */}
             <button
-              onClick={() => setIsMirrored(!isMirrored)}
-              className={`p-3.5 rounded-full glass-panel border transition-all ${
+              onClick={handleToggleMirror}
+              className={`p-3.5 rounded-full glass-panel border transition-colors ${
                 isMirrored ? 'text-amber-400 border-amber-400/40' : 'text-white/70 border-white/10 hover:text-white'
               }`}
               title="Flip Mirror Mode"
@@ -849,12 +946,11 @@ export const App: React.FC = () => {
               <FlipHorizontal className="w-5 h-5" />
             </button>
 
-            {/* Shutter / Record Button */}
             <div className="relative group flex items-center justify-center">
               {isRecording ? (
                 <button
                   onClick={stopRecording}
-                  className="w-20 h-20 rounded-full border-4 border-red-500 bg-red-600/80 hover:bg-red-600 flex items-center justify-center text-white shadow-[0_0_30px_rgba(239,68,68,0.6)] active:scale-95 transition-all"
+                  className="w-20 h-20 rounded-full border-4 border-red-500 bg-red-600/80 hover:bg-red-600 flex items-center justify-center text-white shadow-[0_0_30px_rgba(239,68,68,0.6)] active:scale-95 transition-transform"
                   title="Stop Recording"
                 >
                   <Square className="w-8 h-8 fill-current" />
@@ -862,7 +958,7 @@ export const App: React.FC = () => {
               ) : (
                 <button
                   onClick={startRecording}
-                  className="w-20 h-20 rounded-full p-1 border-4 border-amber-400 bg-black/40 hover:scale-105 active:scale-95 transition-all shadow-[0_0_35px_rgba(255,215,0,0.4)] flex items-center justify-center"
+                  className="w-20 h-20 rounded-full p-1 border-4 border-amber-400 bg-black/40 hover:scale-105 active:scale-95 transition-transform shadow-[0_0_35px_rgba(255,215,0,0.4)] flex items-center justify-center"
                   title="Record Clip (TikTok 9:16)"
                 >
                   <div className="w-full h-full rounded-full bg-gradient-to-tr from-amber-500 via-yellow-400 to-amber-500 flex items-center justify-center text-black font-black">
@@ -872,7 +968,6 @@ export const App: React.FC = () => {
               )}
             </div>
 
-            {/* Switch Camera Button (or Pose Guide) */}
             {availableCameras.length > 1 ? (
               <button
                 onClick={switchCamera}
@@ -883,8 +978,8 @@ export const App: React.FC = () => {
               </button>
             ) : (
               <button
-                onClick={() => setIsGuideOpen(true)}
-                className="p-3.5 rounded-full glass-panel text-amber-400 border border-amber-500/30 transition-colors hover:scale-105"
+                onClick={handleOpenGuide}
+                className="p-3.5 rounded-full glass-panel text-amber-400 border border-amber-500/30 transition-transform hover:scale-105"
                 title="Pose Guide"
               >
                 <Flame className="w-5 h-5" />
@@ -895,7 +990,6 @@ export const App: React.FC = () => {
       ) : (
         /* Welcome / Start Screen */
         <main className="relative z-10 max-w-lg w-full px-6 py-10 flex flex-col items-center text-center safe-area-top safe-area-bottom">
-          {/* Angelic Glowing Hero Icon */}
           <div className="relative mb-6">
             <div className="absolute -inset-4 rounded-full bg-gradient-to-r from-amber-500 via-yellow-300 to-amber-600 opacity-60 blur-xl animate-pulse" />
             <div className="relative w-24 h-24 rounded-3xl bg-black/80 border-2 border-amber-400/80 flex items-center justify-center shadow-2xl">
@@ -914,9 +1008,8 @@ export const App: React.FC = () => {
             Step into divine aesthetic greatness. Powered by WebGL real-time angelic bloom shaders, WebAssembly AI pose tracking, and viral Great Fairy harp audio.
           </p>
 
-          {/* Supported Poses Chips */}
           <div className="flex flex-wrap justify-center gap-2 mb-8 max-w-sm">
-            {['Front Double Bicep', 'Zyzz Pose', 'Lat Spread', 'Any Flex'].map((pose) => (
+            {SUPPORTED_POSE_CHIPS.map((pose) => (
               <span
                 key={pose}
                 className="px-3 py-1 rounded-full bg-white/[0.06] border border-white/10 text-[11px] font-semibold text-amber-200/90"
@@ -926,14 +1019,12 @@ export const App: React.FC = () => {
             ))}
           </div>
 
-          {/* Error Alert */}
           {cameraError && (
             <div className="w-full mb-6 p-3.5 rounded-xl bg-red-900/40 border border-red-500/50 text-red-200 text-xs sm:text-sm">
               {cameraError}
             </div>
           )}
 
-          {/* Start Camera Action */}
           <button
             onClick={startCamera}
             className="w-full max-w-xs py-4 px-6 rounded-2xl bg-gradient-to-r from-amber-500 via-yellow-400 to-amber-500 text-black font-cinzel font-black text-base tracking-wider uppercase shadow-[0_0_35px_rgba(255,215,0,0.45)] hover:brightness-110 active:scale-[0.98] transition-all flex items-center justify-center gap-3"
@@ -943,7 +1034,7 @@ export const App: React.FC = () => {
           </button>
 
           <button
-            onClick={() => setIsGuideOpen(true)}
+            onClick={handleOpenGuide}
             className="mt-4 text-xs text-white/60 hover:text-amber-300 flex items-center gap-1.5 transition-colors"
           >
             <HelpCircle className="w-3.5 h-3.5" />
@@ -952,52 +1043,58 @@ export const App: React.FC = () => {
         </main>
       )}
 
-      {/* Settings Drawer */}
-      <ControlsDrawer
-        isOpen={isControlsOpen}
-        onClose={() => setIsControlsOpen(false)}
-        bloomIntensity={bloomIntensity}
-        onBloomChange={setBloomIntensity}
-        audioVolume={audioVolume}
-        onVolumeChange={setAudioVolume}
-        isMuted={isMuted}
-        onMuteToggle={() => setIsMuted(!isMuted)}
-        poseSensitivity={poseSensitivity}
-        onSensitivityChange={setPoseSensitivity}
-        isMirrored={isMirrored}
-        onMirrorToggle={() => setIsMirrored(!isMirrored)}
-        onSwitchCamera={switchCamera}
-        hasMultipleCameras={availableCameras.length > 1}
-        showSkeleton={showSkeleton}
-        onSkeletonToggle={() => setShowSkeleton(!showSkeleton)}
-        onOpenGuide={() => setIsGuideOpen(true)}
-        forceFilter={forceFilter}
-        onToggleForceFilter={handleToggleForceFilter}
-        fitMode={fitMode}
-        onFitModeToggle={() => setFitMode(fitMode === 'contain' ? 'cover' : 'contain')}
-        cameraZoom={cameraZoom}
-        onCameraZoomChange={setCameraZoom}
-        availableCameras={availableCameras}
-        selectedDeviceId={selectedDeviceId}
-        onSelectCamera={handleSelectCamera}
-        aspectRatioMode={aspectRatioMode}
-        onAspectRatioChange={handleAspectRatioChange}
-        cameraResolution={cameraResolution}
-      />
+      {/* Lazy-Loaded Drawers & Modals */}
+      <Suspense fallback={null}>
+        {isControlsOpen && (
+          <ControlsDrawer
+            isOpen={isControlsOpen}
+            onClose={handleCloseControls}
+            bloomIntensity={bloomIntensity}
+            onBloomChange={setBloomIntensity}
+            audioVolume={audioVolume}
+            onVolumeChange={setAudioVolume}
+            isMuted={isMuted}
+            onMuteToggle={handleToggleMute}
+            poseSensitivity={poseSensitivity}
+            onSensitivityChange={setPoseSensitivity}
+            isMirrored={isMirrored}
+            onMirrorToggle={handleToggleMirror}
+            onSwitchCamera={switchCamera}
+            hasMultipleCameras={availableCameras.length > 1}
+            showSkeleton={showSkeleton}
+            onSkeletonToggle={handleToggleSkeleton}
+            onOpenGuide={handleOpenGuide}
+            forceFilter={forceFilter}
+            onToggleForceFilter={handleToggleForceFilter}
+            fitMode={fitMode}
+            onFitModeToggle={handleToggleFitMode}
+            cameraZoom={cameraZoom}
+            onCameraZoomChange={setCameraZoom}
+            availableCameras={availableCameras}
+            selectedDeviceId={selectedDeviceId}
+            onSelectCamera={handleSelectCamera}
+            aspectRatioMode={aspectRatioMode}
+            onAspectRatioChange={handleAspectRatioChange}
+            cameraResolution={cameraResolution}
+          />
+        )}
 
-      {/* Pose Guide Modal */}
-      <PoseGuideModal
-        isOpen={isGuideOpen}
-        onClose={() => setIsGuideOpen(false)}
-      />
+        {isGuideOpen && (
+          <PoseGuideModal
+            isOpen={isGuideOpen}
+            onClose={handleCloseGuide}
+          />
+        )}
 
-      {/* Record Preview Modal */}
-      <RecordModal
-        isOpen={isRecordModalOpen}
-        onClose={handleCloseRecordModal}
-        videoUrl={recordedVideoUrl}
-        videoBlob={recordedBlob}
-      />
+        {isRecordModalOpen && (
+          <RecordModal
+            isOpen={isRecordModalOpen}
+            onClose={handleCloseRecordModal}
+            videoUrl={recordedVideoUrl}
+            videoBlob={recordedBlob}
+          />
+        )}
+      </Suspense>
     </div>
   );
 };

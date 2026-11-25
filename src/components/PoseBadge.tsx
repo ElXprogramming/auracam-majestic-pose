@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { memo } from 'react';
 import { PoseType } from '../utils/poseClassifier';
 import { Sparkles, Scan, Dumbbell, AlertTriangle, RefreshCw } from 'lucide-react';
 
@@ -11,7 +11,7 @@ interface PoseBadgeProps {
   onRetry?: () => void;
 }
 
-export const PoseBadge: React.FC<PoseBadgeProps> = ({
+export const PoseBadge: React.FC<PoseBadgeProps> = memo(({
   detectedPose,
   rawPose,
   isModelReady,
@@ -50,7 +50,7 @@ export const PoseBadge: React.FC<PoseBadgeProps> = ({
       <div className="relative group">
         {/* Divine golden halo animation */}
         <div className="absolute -inset-1 rounded-full bg-gradient-to-r from-amber-400 via-yellow-300 to-amber-500 opacity-80 blur-md animate-pulse" />
-        <div className="relative inline-flex items-center gap-3 px-5 py-2.5 rounded-full bg-black/85 border border-amber-300 text-amber-300 shadow-[0_0_35px_rgba(255,215,0,0.5)] transition-all duration-300">
+        <div className="relative inline-flex items-center gap-3 px-5 py-2.5 rounded-full bg-black/85 border border-amber-300 text-amber-300 shadow-[0_0_35px_rgba(255,215,0,0.5)] transition-colors duration-300">
           <Sparkles className="w-5 h-5 text-amber-300 animate-spin" style={{ animationDuration: '4s' }} />
           <div className="flex flex-col text-left">
             <span className="text-[10px] uppercase tracking-widest text-amber-200/90 font-bold">
@@ -78,4 +78,6 @@ export const PoseBadge: React.FC<PoseBadgeProps> = ({
       </div>
     </div>
   );
-};
+});
+
+PoseBadge.displayName = 'PoseBadge';
